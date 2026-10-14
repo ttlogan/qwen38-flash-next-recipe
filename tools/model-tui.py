@@ -184,9 +184,16 @@ class ModelTui(App):
         self.selected: str = MODELS[0][0]
 
     def compose(self) -> ComposeResult:
+        # Compute active at compose time so the rows are built in compose() and
+        # actually render. (In Textual 8.2.8, ListItems appended in on_mount()
+        # do not paint.)
+        try:
+            self.active = active_model()
+        except Exception:
+            self.active = None
         yield Header()
         yield Label("GX10 Models (↑/↓ select, Enter action, q quit)", id="title")
-        yield ListView(id="models")
+        yield ListView(*[self._item(m) for m in MODELS], id="models")
         yield Label("", id="hint")
         yield Footer()
 
@@ -198,27 +205,15 @@ class ModelTui(App):
         return ListItem(Label(f"{marker}  {name}{active_tag}  —  {desc}"), id=key)
 
     def on_mount(self) -> None:
-        try:
-            self.active = active_model()
-        except Exception:
-            self.active = None
-        # Always populate the list even if the active-model probe fails/hangs.
-        self._rebuild_list()
+        # Items are built in compose(); just focus the list.
         self.query_one("#models", ListView).focus()
 
     def refresh_list(self) -> None:
-        self._rebuild_list()
+        # Rebuild via recompose() so the rows actually re-render after a swap.
+        self.recompose()
 
     def _rebuild_list(self) -> None:
-        lv = self.query_one("#models", ListView)
-        lv.clear()
-        for m in MODELS:
-            lv.append(self._item(m))
-        # Pre-highlight the active model on launch.
-        if self.active:
-            idx = next((i for i, (k, _, _) in enumerate(MODELS) if k == self.active), None)
-            if idx is not None:
-                lv.index = idx
+        self.refresh_list()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         key = event.item.id  # type: ignore[attr-defined]
