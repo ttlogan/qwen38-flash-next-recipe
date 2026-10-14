@@ -227,10 +227,10 @@ class ModelTui(App):
         self.refresh_list()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        # Only open the action menu when the main list is the active screen. A
-        # trailing keypress after a modal dismisses can bubble here; ignore it
-        # so we never re-open a menu for a stale selection.
-        if not isinstance(self.screen, type(self)):
+        # Only open the action menu when no modal is on top (the main list is the
+        # active screen). A trailing keypress after a modal dismisses can bubble
+        # here; ignore it so we never re-open a menu for a stale selection.
+        if isinstance(self.screen, (ActionScreen, ConfirmScreen, ProgressScreen)):
             return
         key = event.item.id  # type: ignore[attr-defined]
         self.selected = key
