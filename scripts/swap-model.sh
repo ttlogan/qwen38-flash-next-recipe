@@ -31,8 +31,14 @@ launch_lane() {
       # With --weight-loader-disable-mmap each rank frees its shards as it reads
       # them, so head+worker loading together does NOT deadlock the unified pool.
       sudo -u wfoster bash /home/wfoster/sglang-qwen38.sh 0
-      echo "   head (rank 0) launched; waiting 25s for TCPStore bind, then worker"
-      sleep 25
+      echo "   head (rank 0) launched; waiting for TCPStore :29522 to bind, then worker"
+      # Wait for the head's TCPStore (dist-init-addr) to actually bind before starting
+      # the worker, instead of a fixed sleep. A fixed 25s races a cold-boot where JIT/
+      # cache warmup delays the bind -> worker starts too early and the rendezvous fails.
+      for _ in $(seq 1 60); do
+        sudo ss -ltn 2>/dev/null | grep -q ":29522 " && break
+        sleep 1
+      done
       sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
         "bash /home/wfoster/sglang-qwen38.sh 1" 2>/dev/null || true
       ;;
@@ -83,8 +89,8 @@ EOF
 served_name() {
   case "$1" in
     qwen38)           echo "qwen3.8-flash-next-uncensored" ;;
-    glm)              echo "glm" ;;
-    deepseek)         echo "deepseek" ;;
+    glm)              echo "dgx_hobo_default" ;;
+    deepseek)         echo "deepseek-v4-flash-vision-exp" ;;
     *)                echo "$1" ;;
   esac
 }
@@ -111,7 +117,7 @@ stop_stack() {
   # serving lane may differ from the target on a swap. Leaving an orphaned
   # container running on :8000 is a regression (swap X->Y->X double-binds).
   echo "==> stopping all lane containers on head + worker (deepseek/glm/qwen)"
-  for c in b12x-vllm-node vllm_glm53 vllm_qwen38 qwen38fn-sglang; do
+  for c in b12x-vllm-node vllm_glm53 qwen38fn-sglang; do
     sudo -u wfoster podman rm -f "$c" 2>/dev/null || true
     sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
       "podman rm -f $c 2>/dev/null || true" 2>/dev/null || true
