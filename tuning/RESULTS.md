@@ -238,3 +238,21 @@ disable-flashinfer-autotune / cuda-graph-max-bs mitigations), not a vLLM swap.
 _Sources: ursuciprian/qwen3.8-flash-next-dgx-spark-tp-2 (b1.4), NVIDIA forum
 "Qwen3.8-Flash-Next NVFP4 on 2x DGX Spark" (70 peak / 47 typical), sglang#37052/#37111,
 vllm#54199, vllm#54629._
+
+---
+
+## T4 — stabilization mitigations A/B (2026-10-14, REJECTED)
+
+Re-ran the two mitigations (`--disable-flashinfer-autotune` + `--cuda-graph-max-bs 8`)
+vs the verified baseline. Measured on the live 2× GB10 (TP=2, 262K, NVFP4).
+
+| Config | c=1 | c=4 agg | c=8 agg | prefill 100K |
+|---|---|---|---|---|
+| **Baseline** (chunked 4096, NEXTN 3, max-run 4) | **44.98** | **122.30** | **127.54** | ~2941 |
+| T4 (disable-autotune + cgraph-max-bs 8) | 40.14 | 102.51 | 115.14 | ~2189-2927 (noisy) |
+
+**Result: the mitigations REGRESS decode** (c1 -11%, c4 -16%, c8 -10%) and give no
+clear prefill gain. They also make CUDA-graph capture slower (more batch sizes).
+**Rejected. Baseline stays as the Qwen spec.** The earlier crash-cliff mitigation
+(keep max-running-requests at 4, queueing) is the proven stability lever, not these
+two flags.
