@@ -213,3 +213,28 @@ nondeterministic SM121 fault (T1/T3) did NOT recur in 30 min of c=4 load.
 
 Soak harness: `/tmp/soak.py` (sustained c=4 completions, samples health/mem/SoC-temp
 every 5s, CSV to /tmp/soak.csv). Reusable for any future config soak.
+
+## SGLang vs vLLM research verdict (deleg_91c6675b, 2026-10-14)
+
+Research on whether to swap Qwen to vLLM. **Decision: STAY on SGLang baseline.**
+The vLLM nightly lane is the regressive path; do not run it.
+
+| Lane | Perf vs our SGLang | Stability |
+|---|---|---|
+| SGLang (baseline) | 117 agg / 40 single / ~3000 prefill | soak-clean (2432 req / 0 fail / health 200) |
+| vLLM fast path (local-inference-lab **b12x-fork** + MTP4 + MXFP8 lm_head + fp8 KV + GDN-MSE requant, ursuciprian b1.4) | measurably higher (~70 peak / 47 typical) | needs its own soak |
+| vLLM stock/nightly/blazux (our pre-staged cu129-nightly lane) | regresses speed AND stability | — |
+
+**vLLM has an equal-or-worse fault class on this model/hardware:**
+- vllm #54199: CUDA IMA in `precopy_mamba_align_fused_kernel` prefix-cache hit, 100% reproducible, dies at max-num-seqs=1.
+- vllm #54629: repeated >100K-token prefills hang a worker GPU stream on GB10 sm_121 (TP4+EP).
+
+**Conclusion:** the SM121 hybrid-arch (GDN/mamba+QSA) fault is a class on BOTH
+runtimes, not solved by a vLLM swap. Only a full b12x-fork + requantized-checkpoint
+stack (~1.4-1.6x potential) is worth it as a long-run project, with its own soak.
+The higher-value immediate move is stabilizing the CURRENT SGLang (revisit the
+disable-flashinfer-autotune / cuda-graph-max-bs mitigations), not a vLLM swap.
+
+_Sources: ursuciprian/qwen3.8-flash-next-dgx-spark-tp-2 (b1.4), NVIDIA forum
+"Qwen3.8-Flash-Next NVFP4 on 2x DGX Spark" (70 peak / 47 typical), sglang#37052/#37111,
+vllm#54199, vllm#54629._
