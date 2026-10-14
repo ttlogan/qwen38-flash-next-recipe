@@ -81,6 +81,9 @@ class ActionScreen(ModalScreen[str | None]):
             yield Label("  (↑/↓ select, Enter choose, Esc cancel)", id="confirm-sub")
             yield ListView(*[ListItem(Label(a), id=a) for a in self.actions + ["cancel"]], id="action-list")
 
+    def on_mount(self) -> None:
+        self.query_one("#action-list", ListView).focus()
+
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.dismiss(event.item.id)  # type: ignore[attr-defined]
 
@@ -101,6 +104,9 @@ class ConfirmScreen(ModalScreen[bool]):
                 ListItem(Label("Yes"), id="yes"),
                 id="action-list",
             )
+
+    def on_mount(self) -> None:
+        self.query_one("#action-list", ListView).focus()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.dismiss(event.item.id == "yes")  # type: ignore[attr-defined]
