@@ -59,7 +59,10 @@ OVERRIDE_JSON=""
 if [ "$YARN_ENABLED" = "1" ]; then
   FACTOR=$(( (CONTEXT_LENGTH + 131071) / 262144 ))  # round(ctx/262144)
   OVERRIDE_JSON="{\"text_config\":{\"rope_scaling\":{\"type\":\"yarn\",\"factor\":$FACTOR,\"mrope_section\":[11,11,10],\"partial_rotary_factor\":0.25}}}"
+  OVER_EXTRA="--json-model-override-args '$OVERRIDE_JSON'"
   echo "YaRN ON: ctx=$CONTEXT_LENGTH factor=$FACTOR"
+else
+  OVER_EXTRA=""
 fi
 
 # ---- podman cleanup + run ----
@@ -128,7 +131,7 @@ sudo -u wfoster podman run --detach \
     --disable-radix-cache \
     --max-running-requests \"$MAX_RUNNING_REQUESTS\" \
     --context-length \"$CONTEXT_LENGTH\" \
-    $( [ -n \"$OVERRIDE_JSON\" ] && echo \"--json-model-override-args \\\"\\$OVERRIDE_JSON\\\"\" ) \
+    $OVER_EXTRA \
     --mem-fraction-static \"$MEM_FRACTION_STATIC\" \
     --allow-auto-truncate --reasoning-parser auto --tool-call-parser auto --sampling-defaults model \
     --sampling-backend pytorch \
