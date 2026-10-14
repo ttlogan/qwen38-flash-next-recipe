@@ -26,42 +26,14 @@ case "$NODE_RANK" in
   *) echo "rank must be 0 or 1" >&2; exit 2 ;;
 esac
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PATCH_SCRIPT="$REPO_ROOT/sglang/scripts/apply-sm121-qsa-patch.sh"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_DIR="$REPO_ROOT/build"
 SECRET_FILE="$REPO_ROOT/.sglang-api-key"
 
 # ---- ensure SM121 patches are staged (podman-aware) ----
+APPLY_SCRIPT="$REPO_ROOT/sglang/scripts/apply-sm121-podman.sh"
 if [[ ! -f "$BUILD_DIR/sm121_varlen.py" ]]; then
-  # patch apply must be podman. Override the docker calls in the pixelml script.
-  echo "staging SM121 patches..."
-  PODMAN=1 bash -c 'sed -e "s/docker image inspect/podman image inspect/g" -e "s|docker run --rm|sudo -u wfoster podman run --rm|g" "$1" > "$2.apply.mktemp" && mv "$2.apply.mktemp" "$2"' _ "$PATCH_SCRIPT" "$PATCH_SCRIPT.pod"
-  PODMAN_APPLY="$PATCH_SCRIPT.pod"
-  # patch apply script sources common.sh (docker); supply minimal env + podman
-  IMAGE_REF="$IMAGE_REF" REPO_ROOT="$REPO_ROOT" bash -c '
-    export IMAGE_REF; export REPO_ROOT
-    export SRT_PREFIX="/sgl-workspace/sglang/python/sglang/srt"
-    export PATCH_DIR="$REPO_ROOT/sglang/patches"
-    export OUTPUT_DIR="$REPO_ROOT/build"
-    mkdir -p "$OUTPUT_DIR"
-    PA="$REPO_ROOT/sglang/scripts/apply-sm121-qsa-patch.sh"
-    # Rewrite to podman inline:
-    PODIMG="$IMAGE_REF"
-    podman_cat() { local p="$1"; sudo -u wfoster podman run --rm --entrypoint cat "$PODIMG" "$p"; }
-    entries=( "qwen_sparse_attn_backend.py|$PATCH_DIR/sglang-qsa-sm121-fallback.patch|$SRT_PREFIX/layers/attention/qwen_sparse_attn_backend.py"
-              "schedule_batch.py|$PATCH_DIR/sglang-token0-guard-schedule_batch.patch|$SRT_PREFIX/managers/schedule_batch.py"
-              "batch_result_processor.py|$PATCH_DIR/sglang-token0-guard-batch-result-processor.patch|$SRT_PREFIX/managers/scheduler_components/batch_result_processor.py"
-              "scheduler.py|$PATCH_DIR/sglang-token0-guard-scheduler.patch|$SRT_PREFIX/managers/scheduler.py"
-              "sm121_varlen.py|$PATCH_DIR/sm121_varlen.py|-" )
-    for e in "${entries[@]}"; do
-      IFS="|" read -r out patch imgpath <<< "$e"
-      tmp="$OUTPUT_DIR/$out.tmp"
-      if [[ "$imgpath" == "-" ]]; then cp "$patch" "$tmp"; else podman_cat "$imgpath" > "$tmp"; patch --quiet --unified "$tmp" "$patch" || { echo "PATCH FAIL $out"; exit 1; }; fi
-      python3 -m py_compile "$tmp" || { echo "COMPILE FAIL $out"; exit 1; }
-      mv "$tmp" "$OUTPUT_DIR/$out"
-      echo "prepared $out"
-    done
-  '
+  IMAGE_REF="$IMAGE_REF" bash "$APPLY_SCRIPT"
 fi
 
 # ---- API key secret (must exist) ----
