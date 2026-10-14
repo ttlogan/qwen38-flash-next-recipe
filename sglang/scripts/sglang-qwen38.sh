@@ -15,10 +15,10 @@ API_PORT="${API_PORT:-8000}"
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
 YARN="${YARN:-}"   # empty = auto (on when >262K or ==1M); 1 = force; 0 = off
 MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-36}"
-MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.80}"
+MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.90}"
 NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-enp1s0f0np0}"
 NCCL_IB_HCA="${NCCL_IB_HCA:-rocep1s0f0}"
-NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-3}"
+NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-}"
 NAME="${NAME:-qwen38fn-sglang}"
 
 case "$NODE_RANK" in
@@ -61,7 +61,7 @@ sudo -u wfoster podman rm -f "$NAME" 2>/dev/null || true
 sudo -u wfoster podman run --detach \
   --name "$NAME" --restart unless-stopped \
   --network host --ipc host --device nvidia.com/gpu=all \
-  --shm-size 32g --ulimit memlock=-1:-1 --cap-add IPC_LOCK \
+  --ulimit memlock=-1:-1 --cap-add IPC_LOCK \
   --device /dev/infiniband \
   --log-opt max-size=100m --log-opt max-file=5 \
   --env NODE_RANK="$NODE_RANK" \
@@ -75,7 +75,8 @@ sudo -u wfoster podman run --detach \
   --env NCCL_SOCKET_IFNAME="$NCCL_SOCKET_IFNAME" \
   --env GLOO_SOCKET_IFNAME="$NCCL_SOCKET_IFNAME" \
   --env NCCL_NET=IB --env NCCL_IB_DISABLE=0 \
-  --env NCCL_IB_HCA="$NCCL_IB_HCA" --env NCCL_IB_GID_INDEX="$NCCL_IB_GID_INDEX" \
+  --env NCCL_IB_HCA="$NCCL_IB_HCA" \
+  ${NCCL_IB_GID_INDEX:+--env "NCCL_IB_GID_INDEX=$NCCL_IB_GID_INDEX"} \
   --env NCCL_IB_ADDR_FAMILY=AF_INET --env NCCL_IB_ROCE_VERSION_NUM=2 \
   --env NCCL_CROSS_NIC=1 --env NCCL_CUMEM_ENABLE=0 --env NCCL_NVLS_ENABLE=0 \
   --env NCCL_IGNORE_CPU_AFFINITY=1 --env NCCL_DEBUG=WARN \
