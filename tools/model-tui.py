@@ -114,10 +114,6 @@ class ProgressScreen(ModalScreen[None]):
         self.query_one("#progress-log", Label).update(self.heading)
 
 
-class ModelList(ListView):
-    """ListView with an extra marker column for the active model."""
-
-
 class ModelTui(App):
     TITLE = "GX10 Model Manager"
     CSS = """
@@ -185,7 +181,7 @@ class ModelTui(App):
         yield Header()
         with Container(id="list-screen"):
             yield Label("GX10 Models (↑/↓ select, Enter action, q quit)", id="title")
-            yield ModelList(id="models")
+            yield ListView(id="models")
             yield Label("", id="hint")
         yield Footer()
 

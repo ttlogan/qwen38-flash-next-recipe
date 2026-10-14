@@ -317,3 +317,17 @@ The SGLang API is bearer-gated: send `Authorization: Bearer <key>` (the lane's
 SGLang endpoint is `http://<head-mgmt-ip>:8000/v1`; if routed via a proxy (e.g.
 liteLLM on `:4000`), point `baseUrl` at the proxy and set the served model id to
 `qwen3.8-flash-next-uncensored`.
+
+## Model manager TUI (`tools/model-tui.py`)
+
+An optional Textual TUI that lists the available models (deepseek / glm / qwen38),
+highlights the active one, and drives switch / stop / restart. Every action shells
+out to `/usr/local/bin/swap-model.sh`, so the CLI stays fully usable on its own.
+
+Run on the **head node** (leo) as root:
+
+```bash
+model-tui          # wrapper at /usr/local/bin/model-tui
+```
+
+Controls: ↑/↓ select, Enter action, Esc cancel, q quit.
