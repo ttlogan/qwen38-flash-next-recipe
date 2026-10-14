@@ -192,3 +192,24 @@ _T1/T3 both reverted. Baseline restored. Remaining ladder arms (T2/T4/T6/etc.)
 carry the same SM121 nondeterministic-crash risk and are NOT safe to sweep
 until the underlying device-side fault is understood (needs an SGLang fix or a
 different runtime path)._
+
+### Soak test (2026-10-14) — POSITIVE stability signal on the baseline
+
+The baseline serving config (chunked 4096, NEXTN 3, max-running-requests 4, mem 0.80,
+page 64, mamba extra_buffer, flashinfer_cutlass) was soak-tested under sustained c=4
+load for ~30 min.
+
+| Metric | Result |
+|---|---|
+| requests | 2432 |
+| failures | **0** |
+| health | **200 continuous** (no drop) |
+| memory | ~21 GB avail, stable (no leak) |
+| SoC temp | 64-70 C, no throttle |
+
+**Verdict: the baseline is STABLE under sustained load.** No device-side fault, no
+watchdog kill, no health drop. This is the desired stability signal. The earlier
+nondeterministic SM121 fault (T1/T3) did NOT recur in 30 min of c=4 load.
+
+Soak harness: `/tmp/soak.py` (sustained c=4 completions, samples health/mem/SoC-temp
+every 5s, CSV to /tmp/soak.csv). Reusable for any future config soak.
