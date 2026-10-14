@@ -15,6 +15,7 @@ served model name comes from `swap-model.sh --health`.
 
 from __future__ import annotations
 
+import asyncio
 import shlex
 import subprocess
 import sys
@@ -289,20 +290,24 @@ class ModelTui(App):
 
     def _run_action(self, args: list[str], heading: str) -> None:
         self.push_screen(ProgressScreen(heading))
-        self._run_worker(self._action_worker(args, heading), group="action", exclusive=True)
+        # Run the model action off the event loop so the UI (LoadingIndicator)
+        # stays live during the multi-minute load. asyncio.to_thread keeps the
+        # blocking subprocess off the loop; everything else stays on the app
+        # thread (no cross-thread UI calls needed).
+        self.run_worker(self._action_worker(args, heading), exclusive=True)
 
-    def _action_worker(self, args: list[str], heading: str):
+    async def _action_worker(self, args: list[str], heading: str):
         proc: subprocess.CompletedProcess | None = None
         err: str | None = None
         try:
-            proc = run(args)
+            proc = await asyncio.to_thread(run, args)
             self.active = active_model()
         except subprocess.TimeoutExpired:
             err = f"timed out after {args}; the model is still loading. Run 'swap-model.sh --health' to check."
         except Exception as e:  # noqa: BLE001
             err = f"error: {e}"
         finally:
-            self.call_from_thread(self._finish_action, proc, err, args)
+            self._finish_action(proc, err, args)
 
     def _finish_action(self, proc: subprocess.CompletedProcess | None, err: str | None, args: list[str]) -> None:
         self.pop_screen()
