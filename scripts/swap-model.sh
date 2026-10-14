@@ -78,6 +78,7 @@ write_motd() {
 
   LIVE MODEL: $m
     operate: swap-model.sh [--health] [--swap <deepseek|glm|qwen38>]
+    TUI:     model-tui   (arrow-select, Enter action, Esc cancel, q quit)
 
 EOF
 }
