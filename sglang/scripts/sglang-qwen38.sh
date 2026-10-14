@@ -18,6 +18,8 @@ MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.80}"
 CHUNKED_PREFILL_SIZE="${CHUNKED_PREFILL_SIZE:-4096}"
 SPEC_ALGO="${SPEC_ALGO:-NEXTN}"
 SPEC_NUM_STEPS="${SPEC_NUM_STEPS:-3}"
+DISABLE_AUTOTUNE="${DISABLE_AUTOTUNE:-0}"
+CGRAPH_MAX_BS="${CGRAPH_MAX_BS:-0}"
 NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-enp1s0f0np0}"
 NCCL_IB_HCA="${NCCL_IB_HCA:-rocep1s0f0}"
 NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-3}"
@@ -56,6 +58,8 @@ sudo -u wfoster podman run --detach \
   --env CHUNKED_PREFILL_SIZE=\"$CHUNKED_PREFILL_SIZE\" \
   --env SPEC_ALGO=\"$SPEC_ALGO\" \
   --env SPEC_NUM_STEPS=\"$SPEC_NUM_STEPS\" \
+  --env DISABLE_AUTOTUNE=\"$DISABLE_AUTOTUNE\" \
+  --env CGRAPH_MAX_BS=\"$CGRAPH_MAX_BS\" \
   --env MEM_FRACTION_STATIC="$MEM_FRACTION_STATIC" \
   --env SGLANG_API_KEY_FILE=/run/secrets/sglang-api-key \
   --env HF_HUB_OFFLINE=1 --env TRANSFORMERS_OFFLINE=1 \
@@ -94,6 +98,8 @@ sudo -u wfoster podman run --detach \
     --mamba-ssm-dtype bfloat16 --mamba-scheduler-strategy extra_buffer --mamba-track-interval 64 \
     --speculative-algorithm \"$SPEC_ALGO\" --speculative-num-steps \"$SPEC_NUM_STEPS\" --speculative-eagle-topk 1 --speculative-num-draft-tokens 4\
     --chunked-prefill-size \"$CHUNKED_PREFILL_SIZE\"\
+    ${DISABLE_AUTOTUNE:+--disable-flashinfer-autotune} \
+    ${CGRAPH_MAX_BS:+--cuda-graph-max-bs $CGRAPH_MAX_BS --disable-cuda-graph-padding} \
     --max-running-requests \"$MAX_RUNNING_REQUESTS\" \
     --context-length \"$CONTEXT_LENGTH\" \
     --mem-fraction-static \"$MEM_FRACTION_STATIC\" \
