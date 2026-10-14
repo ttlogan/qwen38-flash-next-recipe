@@ -121,9 +121,12 @@ sudo -u wfoster podman run --detach \
     --quantization modelopt_fp4 --fp4-gemm-backend flashinfer_cutlass \
     --page-size 64 \
     --linear-attn-prefill-backend triton --linear-attn-decode-backend flashinfer \
-    --mamba-ssm-dtype bfloat16 --mamba-scheduler-strategy extra_buffer --mamba-track-interval 64 \
+    --mamba-ssm-dtype bfloat16 --mamba-scheduler-strategy extra_buffer --mamba-track-interval 64 --max-mamba-cache-size 97 \
     --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
     --enable-linear-replayssm-spec --speculative-attention-mode decode \
+    --ple-offload-embedding \
+    --default-chat-template-kwargs '{"enable_thinking": false}' \
+    --trust-remote-code \
     --stream-interval 32 \
     --chunked-prefill-size 4096 \
     --max-total-tokens 600000 \
