@@ -125,7 +125,6 @@ sudo -u wfoster podman run --detach \
     --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
     --enable-linear-replayssm-spec --speculative-attention-mode decode \
     --ple-offload-embedding \
-    --default-chat-template-kwargs '{"enable_thinking": false}' \
     --trust-remote-code \
     --stream-interval 32 \
     --chunked-prefill-size 4096 \
