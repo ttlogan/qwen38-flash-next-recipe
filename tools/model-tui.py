@@ -70,10 +70,15 @@ def active_model() -> str | None:
 class ActionScreen(ModalScreen[str | None]):
     """Sub-menu of available actions for a selected model (arrow-select + Enter)."""
 
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
     def __init__(self, model_label: str, actions: list[str]):
         super().__init__()
         self.model_label = model_label
         self.actions = actions
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm"):
@@ -91,10 +96,15 @@ class ActionScreen(ModalScreen[str | None]):
 class ConfirmScreen(ModalScreen[bool]):
     """Yes / No confirmation dialogue (arrow-select + Enter)."""
 
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
     def __init__(self, message: str, danger: bool = False):
         super().__init__()
         self.message = message
         self.danger = danger
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm"):
