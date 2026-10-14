@@ -2,8 +2,9 @@
 # Stage SM121 QSA + token-0 guard patches from the SGLang image, podman-aware.
 # Produces build/ files that sglang-qwen38.sh bind-mounts into the container.
 set -euo pipefail
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-IMAGE_REF="${IMAGE_REF:-lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1}"
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+REPO_ROOT="$(cd "$(dirname "$SELF")/../.." && pwd)"
+IMAGE_REF="${IMAGE_REF:-docker.io/lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1}"
 PATCH_DIR="${REPO_ROOT}/sglang/patches"
 OUTPUT_DIR="${REPO_ROOT}/build"
 SRT="/sgl-workspace/sglang/python/sglang/srt"

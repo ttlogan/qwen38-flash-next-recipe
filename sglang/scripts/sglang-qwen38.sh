@@ -27,7 +27,8 @@ case "$NODE_RANK" in
   *) echo "rank must be 0 or 1" >&2; exit 2 ;;
 esac
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+REPO_ROOT="$(cd "$(dirname "$SELF")/../.." && pwd)"
 BUILD_DIR="$REPO_ROOT/build"
 SECRET_FILE="$REPO_ROOT/.sglang-api-key"
 
