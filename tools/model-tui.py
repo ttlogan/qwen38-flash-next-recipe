@@ -21,8 +21,8 @@ import sys
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import Button, Footer, Header, Label, ListItem, ListView, LoadingIndicator, Static
+from textual.containers import Container, Vertical
+from textual.widgets import Footer, Header, Label, ListItem, ListView, LoadingIndicator
 from textual.screen import ModalScreen
 
 SWAP = "/usr/local/bin/swap-model.sh"
@@ -54,7 +54,7 @@ def active_model() -> str | None:
 
 
 class ActionScreen(ModalScreen[str | None]):
-    """Sub-menu of available actions for a selected model."""
+    """Sub-menu of available actions for a selected model (arrow-select + Enter)."""
 
     def __init__(self, model_label: str, actions: list[str]):
         super().__init__()
@@ -64,17 +64,15 @@ class ActionScreen(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm"):
             yield Label(f"  {self.model_label}", id="confirm-msg")
-            yield Label("", id="confirm-sub")
-            for a in self.actions:
-                yield Button(a, id=a)
-            yield Button("Cancel", id="cancel", variant="primary")
+            yield Label("  (↑/↓ select, Enter choose, Esc cancel)", id="confirm-sub")
+            yield ListView(*[ListItem(Label(a), id=a) for a in self.actions + ["cancel"]], id="action-list")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id)
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        self.dismiss(event.item.id)  # type: ignore[attr-defined]
 
 
 class ConfirmScreen(ModalScreen[bool]):
-    """Yes / No confirmation dialogue."""
+    """Yes / No confirmation dialogue (arrow-select + Enter)."""
 
     def __init__(self, message: str, danger: bool = False):
         super().__init__()
@@ -84,12 +82,14 @@ class ConfirmScreen(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm"):
             yield Label("⚠ " + self.message, id="confirm-msg")
-            with Horizontal(id="confirm-btns"):
-                yield Button("No", id="no", variant="primary")
-                yield Button("Yes", id="yes", variant="error" if self.danger else "success")
+            yield ListView(
+                ListItem(Label("No"), id="no"),
+                ListItem(Label("Yes"), id="yes"),
+                id="action-list",
+            )
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "yes")
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        self.dismiss(event.item.id == "yes")  # type: ignore[attr-defined]
 
 
 class ProgressScreen(ModalScreen[None]):
@@ -117,12 +117,7 @@ class ProgressScreen(ModalScreen[None]):
 class ModelTui(App):
     TITLE = "GX10 Model Manager"
     CSS = """
-    Screen {
-        align: center middle;
-    }
     #list-screen {
-        width: 100%;
-        height: 100%;
         padding: 1 2;
     }
     #title {
@@ -133,34 +128,31 @@ class ModelTui(App):
         height: auto;
         margin-bottom: 1;
     }
-    ListItem {
-        padding: 1 2;
+    ListView > ListItem {
+        padding: 0 1;
     }
-    ListItem.--highlight {
+    ListView > ListItem.--highlight {
         background: $accent;
+        color: $text;
     }
     #hint {
         color: $text-muted;
     }
     #confirm {
         width: 60;
-        padding: 2 3;
+        padding: 1 2;
         border: thick $primary;
         background: $surface;
     }
     #confirm-msg {
         text-style: bold;
-        margin-bottom: 2;
-    }
-    #confirm-btns {
-        height: auto;
+        margin-bottom: 1;
     }
     #progress {
         width: 80;
         padding: 2 3;
         border: thick $primary;
         background: $surface;
-        align: center middle;
     }
     #progress-msg {
         text-style: bold;
@@ -188,15 +180,9 @@ class ModelTui(App):
     def _item(self, m: tuple[str, str, str]) -> ListItem:
         key, name, desc = m
         is_active = key == self.active
-        marker = "●" if is_active else " "
-        return ListItem(
-            Horizontal(
-                Label(f"{marker}  {name}", classes="name"),
-                Label("  ACTIVE" if is_active else "        ", classes="active"),
-                Label(f"  {desc}", classes="desc"),
-            ),
-            id=key,
-        )
+        marker = "●" if is_active else "○"
+        active_tag = "  [b]ACTIVE[/b]" if is_active else ""
+        return ListItem(Label(f"{marker}  {name}{active_tag}  —  {desc}"), id=key)
 
     def on_mount(self) -> None:
         self.active = active_model()
