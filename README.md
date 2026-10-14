@@ -212,6 +212,7 @@ WantedBy=multi-user.target
 |---|---|---|
 | Long-context output = all `!` (token id 0) | Missing SM121 QSA fallback / token-0 guard (GB10 FlashInfer sparse-decode bug) | Ensure `sglang/patches/` applied (bind-mounted in the container) |
 | Engine dies past ~24K ctx | Missing top-k patch for the sparse-attention indexer | Install `sparse_attn_indexer_kpool.py` overlay (same as GLM lane) |
+| **Rank-0 head hangs during `load_weights`** (worker finishes `Load weight end`, head stuck at `qwen4_exp.py:2096` / MoE `copy_`, head host RAM 0 free + swapping, GPU 1%) | mmap loader accumulates the checkpoint's cold pages on top of the GPU-resident model, exhausting the GB10 unified pool; the H2D `copy_` page-fault stalls under the CUDA driver lock on the head only | Add `--weight-loader-disable-mmap` (load eagerly, free each shard). Inject via `launch_secure.py` argv — the `--model-loader-extra-config` JSON gets mangled by shell quoting. NOT NCCL, NOT `/dev/shm`, NOT loader threading, NOT extra flags (all ruled out with live tests) |
 | OOM on boot (NVFP4 + KV, bf16 PLE) | `mem-fraction-static` too high, or abliterated/NVFP4 bf16 PLE too big | Lower to 0.78-0.80; use the ModelOpt FP8-PLE repack (this repo) |
 | Head never reaches `/health` | Worker not launched first, or `:8000`/TCPStore race | Launch rank 1 before rank 0 |
 | `modelopt_fp4` refused / PLE not bound | Stock runtime can't bind the FP8 PLE under an NVFP4 checkpoint | Use the pinned SGLang image + `--quantization modelopt_fp4` (and the SM121 patches) |
