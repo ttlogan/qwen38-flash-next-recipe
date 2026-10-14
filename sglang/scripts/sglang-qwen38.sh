@@ -7,12 +7,13 @@ set -euo pipefail
 NODE_RANK="${1:?usage: sglang-qwen38.sh <0|1>}"
 
 # ---- our cluster fabric / model (substituted by swap-model.sh or real values) ----
-IMAGE_REF="${IMAGE_REF:-lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1}"
+IMAGE_REF="${IMAGE_REF:-docker.io/lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1}"
 MODEL_DIR="${MODEL_DIR:-/models/orca-qwen3.8-modelopt-nvfp4}"
 HEAD_IP="${HEAD_IP:-192.168.177.11}"; WORKER_IP="${WORKER_IP:-192.168.177.12}"
 DIST_PORT="${DIST_PORT:-29522}"
 API_PORT="${API_PORT:-8000}"
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
+YARN="${YARN:-}"   # empty = auto (on when >262K or ==1M); 1 = force; 0 = off
 MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-36}"
 MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.80}"
 NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-enp1s0f0np0}"
@@ -40,6 +41,20 @@ fi
 [[ -s "$SECRET_FILE" ]] || { echo "API secret missing: $SECRET_FILE (run: openssl rand -hex 32)" >&2; exit 1; }
 chmod 600 "$SECRET_FILE"
 
+# ---- YaRN: enable when context >262K (or forced). Factor = round(ctx/262144). ----
+YARN_ENABLED=0
+if [ -n "$YARN" ]; then
+  [ "$YARN" != "0" ] && YARN_ENABLED=1
+elif [ "$CONTEXT_LENGTH" -gt 262144 ]; then
+  YARN_ENABLED=1
+fi
+OVERRIDE_JSON=""
+if [ "$YARN_ENABLED" = "1" ]; then
+  FACTOR=$(( (CONTEXT_LENGTH + 131071) / 262144 ))  # round(ctx/262144)
+  OVERRIDE_JSON="{\"text_config\":{\"rope_scaling\":{\"type\":\"yarn\",\"factor\":$FACTOR,\"mrope_section\":[11,11,10],\"partial_rotary_factor\":0.25}}}"
+  echo "YaRN ON: ctx=$CONTEXT_LENGTH factor=$FACTOR"
+fi
+
 # ---- podman cleanup + run ----
 sudo -u wfoster podman rm -f "$NAME" 2>/dev/null || true
 sudo -u wfoster podman run --detach \
@@ -65,6 +80,8 @@ sudo -u wfoster podman run --detach \
   --env NCCL_IGNORE_CPU_AFFINITY=1 --env NCCL_DEBUG=WARN \
   --env TORCH_NCCL_DUMP_ON_TIMEOUT=1 --env TORCH_NCCL_ENABLE_MONITORING=1 \
   --env TORCHINDUCTOR_CACHE_DIR=/cache/torch --env TRITON_CACHE_DIR=/cache/triton \
+  --env SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 \
+  ${OVERRIDE_JSON:+--env "OVERRIDE_JSON=$OVERRIDE_JSON"} \
   --mount type=bind,src="$MODEL_DIR",dst=/models/qwen38-flash-next,readonly \
   --mount type=bind,src="$SECRET_FILE",dst=/run/secrets/sglang-api-key,readonly \
   --mount type=bind,src="$REPO_ROOT/sglang/scripts/launch_secure.py",dst=/opt/qwen/launch_secure.py,readonly \
@@ -90,6 +107,7 @@ sudo -u wfoster podman run --detach \
     --chunked-prefill-size 4096 \
     --max-running-requests \"$MAX_RUNNING_REQUESTS\" \
     --context-length \"$CONTEXT_LENGTH\" \
+    $( [ -n "$OVERRIDE_JSON" ] && echo "--json-model-override-args \"\$OVERRIDE_JSON\"" ) \
     --mem-fraction-static \"$MEM_FRACTION_STATIC\" \
     --allow-auto-truncate --reasoning-parser auto --tool-call-parser auto --sampling-defaults model \
     --watchdog-timeout 1200 --enable-metrics --host 0.0.0.0 --port \"$API_PORT\" 2>&1 | python3 -u /opt/qwen/redact_stream.py"
