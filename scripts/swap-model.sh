@@ -53,7 +53,7 @@ esac
 
 log() { echo "[swap-model] $*"; }
 
-write_state() { echo "$1" | sudo tee "$STATE" >/dev/null; }
+write_state() { sudo mkdir -p "$(dirname "$STATE")"; echo "$1" | sudo tee "$STATE" >/dev/null; }
 read_state() { [ -f "$STATE" ] && cat "$STATE" || echo deepseek; }
 
 write_motd() {
