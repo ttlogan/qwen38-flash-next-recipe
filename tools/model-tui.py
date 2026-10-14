@@ -205,8 +205,13 @@ class ModelTui(App):
         return ListItem(Label(f"{marker}  {name}{active_tag}  —  {desc}"), id=key)
 
     def on_mount(self) -> None:
-        # Items are built in compose(); just focus the list.
-        self.query_one("#models", ListView).focus()
+        # Focus the list and pre-highlight the active model row.
+        lv = self.query_one("#models", ListView)
+        if self.active:
+            idx = next((i for i, (k, _, _) in enumerate(MODELS) if k == self.active), None)
+            if idx is not None:
+                lv.index = idx
+        lv.focus()
 
     def refresh_list(self) -> None:
         # Rebuild via recompose() so the rows actually re-render after a swap.
