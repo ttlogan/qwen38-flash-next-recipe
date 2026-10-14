@@ -14,14 +14,16 @@ DIST_PORT="${DIST_PORT:-29522}"
 API_PORT="${API_PORT:-8000}"
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
 YARN="${YARN:-}"   # empty = auto (on when >262K or ==1M); 1 = force; 0 = off
-MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-36}"
+MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-6}"
 MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.80}"
 NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-enp1s0f0np0}"
 NCCL_IB_HCA="${NCCL_IB_HCA:-rocep1s0f0}"
 NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-3}"
 NCCL_IB_ADDR_RANGE="${NCCL_IB_ADDR_RANGE:-192.168.177.0/24}"
 NCCL_HOME="${NCCL_HOME:-$HOME/nccl/build}"
-NCCL_PRELOAD="${NCCL_PRELOAD:-$NCCL_HOME/lib/libnccl.so.2}"
+# Resolve the symlink to the real .so so LD_PRELOAD doesn't hit a dangling pointer.
+_NCCL_REAL="$(readlink -f "$NCCL_HOME/lib/libnccl.so.2" 2>/dev/null)"
+NCCL_PRELOAD="${NCCL_PRELOAD:-$_NCCL_REAL}"
 [ -f "$NCCL_PRELOAD" ] || NCCL_PRELOAD=""
 NAME="${NAME:-qwen38fn-sglang}"
 
@@ -83,14 +85,16 @@ sudo -u wfoster podman run --detach \
   --env NCCL_IB_GID_INDEX="$NCCL_IB_GID_INDEX" \
   --env NCCL_IB_ADDR_RANGE="$NCCL_IB_ADDR_RANGE" \
   --env NCCL_IB_ADDR_FAMILY=AF_INET --env NCCL_IB_ROCE_VERSION_NUM=2 \
-  --env NCCL_CROSS_NIC=0 --env NCCL_CUMEM_ENABLE=0 --env NCCL_NVLS_ENABLE=0 \
+  --env NCCL_MAX_NCHANNELS=4 --env NCCL_MIN_NCHANNELS=4 --env NCCL_CROSS_NIC=0 --env NCCL_CUMEM_ENABLE=0 --env NCCL_NVLS_ENABLE=0 \
+  --env TORCH_CUDA_ARCH_LIST=12.1a --env FLASHINFER_CUDA_ARCH_LIST=12.1a \
+  --env TORCH_NCCL_ASYNC_ERROR_HANDLING=1 \
   --env NCCL_IB_MERGE_NICS=0 \
   --env TP_SOCKET_IFNAME="$NCCL_SOCKET_IFNAME" --env MN_IF_NAME="$NCCL_SOCKET_IFNAME" \
   --env NCCL_IGNORE_CPU_AFFINITY=1 --env NCCL_DEBUG=WARN \
   --env TORCH_NCCL_DUMP_ON_TIMEOUT=1 --env TORCH_NCCL_ENABLE_MONITORING=1 \
-  --env NCCL_HOME="$NCCL_HOME" \
-  ${NCCL_PRELOAD:+--env "LD_PRELOAD=$NCCL_PRELOAD"} \
-  ${NCCL_PRELOAD:+--mount "type=bind,src=$NCCL_PRELOAD,dst=/root/nccl/build/lib/libnccl.so.2,readonly"} \
+  --env NCCL_HOME="/usr/local/lib" \
+  ${NCCL_PRELOAD:+--env "LD_PRELOAD=/usr/local/lib/libnccl.so.2"} \
+  ${NCCL_PRELOAD:+--mount "type=bind,src=$NCCL_PRELOAD,dst=/usr/local/lib/libnccl.so.2,readonly"} \
   --env TORCHINDUCTOR_CACHE_DIR=/cache/torch --env TRITON_CACHE_DIR=/cache/triton \
   --env SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 \
   ${OVERRIDE_JSON:+--env "OVERRIDE_JSON=$OVERRIDE_JSON"} \
@@ -116,13 +120,18 @@ sudo -u wfoster podman run --detach \
     --linear-attn-prefill-backend triton --linear-attn-decode-backend flashinfer \
     --mamba-ssm-dtype bfloat16 --mamba-scheduler-strategy extra_buffer --mamba-track-interval 64 \
     --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
+    --enable-linear-replayssm-spec --speculative-attention-mode decode \
     --stream-interval 32 \
     --chunked-prefill-size 4096 \
+    --max-total-tokens 600000 \
+    --cuda-graph-max-bs 8 --disable-cuda-graph-padding --disable-prefill-cuda-graph \
+    --disable-radix-cache \
     --max-running-requests \"$MAX_RUNNING_REQUESTS\" \
     --context-length \"$CONTEXT_LENGTH\" \
-    $( [ -n "$OVERRIDE_JSON" ] && echo "--json-model-override-args \"\$OVERRIDE_JSON\"" ) \
+    $( [ -n \"$OVERRIDE_JSON\" ] && echo \"--json-model-override-args \\\"\\$OVERRIDE_JSON\\\"\" ) \
     --mem-fraction-static \"$MEM_FRACTION_STATIC\" \
     --allow-auto-truncate --reasoning-parser auto --tool-call-parser auto --sampling-defaults model \
+    --sampling-backend pytorch \
     --watchdog-timeout 1200 --enable-metrics --host 0.0.0.0 --port \"$API_PORT\" 2>&1 | python3 -u /opt/qwen/redact_stream.py"
 
 echo "started $NAME rank=$NODE_RANK dist=$DIST_INIT_ADDR tp=2 ctx=$CONTEXT_LENGTH gpu=$MEM_FRACTION_STATIC"
