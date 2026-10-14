@@ -22,7 +22,7 @@ RAPH="192.168.0.143"
 launch_lane() {
   local m="$1"
   case "$m" in
-    deepseek) sudo -u wfoster "$LAUNCHER" ;;
+    deepseek) $LAUNCHER ;;
     glm)
       # GLM is served by vLLM (tp2, 2-node, distributed-executor-backend mp).
       # The launcher (glm53-vllm.sh) is rank-aware ($1 = 0|1) and uses
