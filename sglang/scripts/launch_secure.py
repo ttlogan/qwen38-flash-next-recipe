@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 from pathlib import Path
 
 from sglang.launch_server import run_server
@@ -23,7 +24,13 @@ def main() -> None:
 
     # ServerArgs becomes immutable after resolution. Add the key to the
     # in-memory argument list before parsing so it never appears in host argv.
-    server_args = prepare_server_args([*sys.argv[1:], "--api-key", api_key])
+    # This Qwen4Exp NVFP4 checkpoint hangs on GB10 unified memory with the
+    # default multithreaded mmap safetensors loader (CUDA driver rwlock held
+    # across cold mmap page-fault -> rank-0 stall). Inject single-thread load.
+    _loader_extra = json.dumps({"enable_multithread_load": False})
+    server_args = prepare_server_args(
+        [*sys.argv[1:], "--model-loader-extra-config", _loader_extra, "--api-key", api_key]
+    )
 
     try:
         run_server(server_args)
