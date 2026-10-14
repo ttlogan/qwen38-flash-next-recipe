@@ -52,6 +52,36 @@ topology — all host/credential values are placeholders).
 
 ---
 
+## Why SGLang (not vLLM)
+
+**This lane is served on SGLang, deliberately.** The question "should Qwen run on
+vLLM instead?" was researched (SGLang vs vLLM head-to-head on this exact model +
+2× GB10 hardware) and the answer is **no** — we stay on SGLang. Rationale:
+
+| Path | c=1 | c=8 agg | Notes |
+|---|---|---|---|
+| **SGLang (this lane)** | ~40 | ~120 | stable; soak-clean (2400+ req / 0 fail / health 200) |
+| vLLM **fast path** (local-inference-lab **b12x-fork** + MTP4 + MXFP8 lm_head + fp8 KV + GDN-MSE requant; `ursuciprian/qwen3.8-flash-next-dgx-spark-tp-2` b1.4) | ~62 | ~196 | **1.5-1.6x faster**, but a large fork + re-quantized-checkpoint build with its own soak |
+| vLLM **stock/nightly** (blazux + Ray, MTP3, bf16 KV) | ~31 | ~74 | **slower than SGLang** |
+
+Key facts:
+- **vLLM only beats SGLang with the full b12x-fork + MTP4 + GDN-MSE re-quantized
+  checkpoint stack** (a substantial, ongoing build). Stock/nightly vLLM (including
+  any `cu129-nightly` lane) is *slower* than SGLang on the same hardware.
+- **The SM121 device-side crash is NOT SGLang-specific.** vLLM has an equally
+  severe fault class on this model: vllm#54199 (CUDA IMA in `precopy_mamba_align_fused_kernel`
+  on a prefix-cache hit, 100% reproducible) and vllm#54629 (>100K-token prefills hang
+  a worker stream on GB10 sm_121). Swapping to vLLM buys **no reliability**.
+- Therefore: **stay on SGLang.** We keep the stable, soak-tested SGLang baseline and
+  stabilize it (rather than swap runtimes) if throughput headroom is needed. Only a
+  committed b12x-fork project would justify moving off SGLang.
+
+*Sources: SGLang#37052/#37111 (SM121 hybrid fault), vllm#54199/#54629 (vLLM's
+own equal severity), ursuciprian/qwen3.8-flash-next-dgx-spark-tp-2 (b1.4), NVIDIA
+forum "Qwen3.8-Flash-Next NVFP4 on 2x DGX Spark".*
+
+---
+
 ## Cluster topology (sanitized)
 
 | Role | Host (placeholder) | RoCE IP (placeholder) | Rank |
