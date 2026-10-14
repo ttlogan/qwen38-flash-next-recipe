@@ -22,11 +22,11 @@ launch_lane() {
     deepseek) sudo -u wfoster "$LAUNCHER" ;;
     glm)      sudo -u wfoster bash /home/wfoster/glm53-vllm.sh 0 ;;
     qwen38)
-      # Qwen is a direct-podman lane: WORKER (rank 1, raph) must come up FIRST,
-      # then head (rank 0). HEAD-first hits the TCPStore rendezvous race.
+      # Qwen is served by SGLang (tp2, 2-node). WORKER (rank 1, raph) must come
+      # up FIRST, then head (rank 0). HEAD-first hits the TCPStore rendezvous race.
       sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
-        "bash /home/wfoster/qwen38-vllm.sh 1" 2>/dev/null || true
-      sudo -u wfoster bash /home/wfoster/qwen38-vllm.sh 0
+        "bash /home/wfoster/sglang-qwen38.sh 1" 2>/dev/null || true
+      sudo -u wfoster bash /home/wfoster/sglang-qwen38.sh 0
       ;;
   esac
 }
@@ -44,9 +44,9 @@ case "${2:-${CURRENT_MODEL:-deepseek}}" in
     MODEL_DIR=/models/glm-5.3-flash-nvfp4
     ;;
   qwen38)
-    CONTAINER=vllm_qwen38
-    LAUNCHER="sudo -u wfoster bash /home/wfoster/qwen38-vllm.sh 0"
-    MODEL_DIR=/models/orcarouter-qwen3.8-flash-next-uncensored-nvfp4
+    CONTAINER=qwen38fn-sglang
+    LAUNCHER="sudo -u wfoster bash /home/wfoster/sglang-qwen38.sh 0"
+    MODEL_DIR=/models/orca-qwen3.8-modelopt-nvfp4
     ;;
   *) echo "unknown model '${2:-}' (use deepseek|glm|qwen38)" >&2; exit 2 ;;
 esac
@@ -90,7 +90,7 @@ stop_stack() {
   # serving lane may differ from the target on a swap. Leaving an orphaned
   # container running on :8000 is a regression (swap X->Y->X double-binds).
   echo "==> stopping all lane containers on head + worker (deepseek/glm/qwen)"
-  for c in b12x-vllm-node vllm_glm53 vllm_qwen38; do
+  for c in b12x-vllm-node vllm_glm53 vllm_qwen38 qwen38fn-sglang; do
     sudo -u wfoster podman rm -f "$c" 2>/dev/null || true
     sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
       "podman rm -f $c 2>/dev/null || true" 2>/dev/null || true

@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Qwen3.8-Flash-Next Uncensored (jpezzulli OrcaRouter ModelOpt-NVFP4) on TWO DGX Sparks via SGLang, TP2.
+# Podman (rootless, sudo -u wfoster) integration of PixelML's 2x-DGX-Spark SGLang recipe.
+# Applies the SM121 QSA/token0-guard patches (required on GB10), then launches.
+# Usage: sglang-qwen38.sh <0|1>   (run rank 1 = worker FIRST, then rank 0 = head)
+set -euo pipefail
+NODE_RANK="${1:?usage: sglang-qwen38.sh <0|1>}"
+
+# ---- our cluster fabric / model (substituted by swap-model.sh or real values) ----
+IMAGE_REF="${IMAGE_REF:-lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1}"
+MODEL_DIR="${MODEL_DIR:-/models/orca-qwen3.8-modelopt-nvfp4}"
+HEAD_IP="${HEAD_IP:-192.168.177.11}"; WORKER_IP="${WORKER_IP:-192.168.177.12}"
+DIST_PORT="${DIST_PORT:-29522}"
+API_PORT="${API_PORT:-8000}"
+CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
+MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-36}"
+MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.80}"
+NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-enp1s0f0np0}"
+NCCL_IB_HCA="${NCCL_IB_HCA:-rocep1s0f0}"
+NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-3}"
+NAME="${NAME:-qwen38fn-sglang}"
+
+case "$NODE_RANK" in
+  0) DIST_INIT_ADDR="$HEAD_IP:$DIST_PORT" ;;
+  1) DIST_INIT_ADDR="$HEAD_IP:$DIST_PORT" ;;
+  *) echo "rank must be 0 or 1" >&2; exit 2 ;;
+esac
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PATCH_SCRIPT="$REPO_ROOT/sglang/scripts/apply-sm121-qsa-patch.sh"
+BUILD_DIR="$REPO_ROOT/build"
+SECRET_FILE="$REPO_ROOT/.sglang-api-key"
+
+# ---- ensure SM121 patches are staged (podman-aware) ----
+if [[ ! -f "$BUILD_DIR/sm121_varlen.py" ]]; then
+  # patch apply must be podman. Override the docker calls in the pixelml script.
+  echo "staging SM121 patches..."
+  PODMAN=1 bash -c 'sed -e "s/docker image inspect/podman image inspect/g" -e "s|docker run --rm|sudo -u wfoster podman run --rm|g" "$1" > "$2.apply.mktemp" && mv "$2.apply.mktemp" "$2"' _ "$PATCH_SCRIPT" "$PATCH_SCRIPT.pod"
+  PODMAN_APPLY="$PATCH_SCRIPT.pod"
+  # patch apply script sources common.sh (docker); supply minimal env + podman
+  IMAGE_REF="$IMAGE_REF" REPO_ROOT="$REPO_ROOT" bash -c '
+    export IMAGE_REF; export REPO_ROOT
+    export SRT_PREFIX="/sgl-workspace/sglang/python/sglang/srt"
+    export PATCH_DIR="$REPO_ROOT/sglang/patches"
+    export OUTPUT_DIR="$REPO_ROOT/build"
+    mkdir -p "$OUTPUT_DIR"
+    PA="$REPO_ROOT/sglang/scripts/apply-sm121-qsa-patch.sh"
+    # Rewrite to podman inline:
+    PODIMG="$IMAGE_REF"
+    podman_cat() { local p="$1"; sudo -u wfoster podman run --rm --entrypoint cat "$PODIMG" "$p"; }
+    entries=( "qwen_sparse_attn_backend.py|$PATCH_DIR/sglang-qsa-sm121-fallback.patch|$SRT_PREFIX/layers/attention/qwen_sparse_attn_backend.py"
+              "schedule_batch.py|$PATCH_DIR/sglang-token0-guard-schedule_batch.patch|$SRT_PREFIX/managers/schedule_batch.py"
+              "batch_result_processor.py|$PATCH_DIR/sglang-token0-guard-batch-result-processor.patch|$SRT_PREFIX/managers/scheduler_components/batch_result_processor.py"
+              "scheduler.py|$PATCH_DIR/sglang-token0-guard-scheduler.patch|$SRT_PREFIX/managers/scheduler.py"
+              "sm121_varlen.py|$PATCH_DIR/sm121_varlen.py|-" )
+    for e in "${entries[@]}"; do
+      IFS="|" read -r out patch imgpath <<< "$e"
+      tmp="$OUTPUT_DIR/$out.tmp"
+      if [[ "$imgpath" == "-" ]]; then cp "$patch" "$tmp"; else podman_cat "$imgpath" > "$tmp"; patch --quiet --unified "$tmp" "$patch" || { echo "PATCH FAIL $out"; exit 1; }; fi
+      python3 -m py_compile "$tmp" || { echo "COMPILE FAIL $out"; exit 1; }
+      mv "$tmp" "$OUTPUT_DIR/$out"
+      echo "prepared $out"
+    done
+  '
+fi
+
+# ---- API key secret (must exist) ----
+[[ -s "$SECRET_FILE" ]] || { echo "API secret missing: $SECRET_FILE (run: openssl rand -hex 32)" >&2; exit 1; }
+chmod 600 "$SECRET_FILE"
+
+# ---- podman cleanup + run ----
+sudo -u wfoster podman rm -f "$NAME" 2>/dev/null || true
+sudo -u wfoster podman run --detach \
+  --name "$NAME" --restart unless-stopped \
+  --network host --ipc host --device nvidia.com/gpu=all \
+  --shm-size 32g --ulimit memlock=-1:-1 --cap-add IPC_LOCK \
+  --device /dev/infiniband \
+  --log-opt max-size=100m --log-opt max-file=5 \
+  --env NODE_RANK="$NODE_RANK" \
+  --env DIST_INIT_ADDR="$DIST_INIT_ADDR" \
+  --env API_PORT="$API_PORT" \
+  --env CONTEXT_LENGTH="$CONTEXT_LENGTH" \
+  --env MAX_RUNNING_REQUESTS="$MAX_RUNNING_REQUESTS" \
+  --env MEM_FRACTION_STATIC="$MEM_FRACTION_STATIC" \
+  --env SGLANG_API_KEY_FILE=/run/secrets/sglang-api-key \
+  --env HF_HUB_OFFLINE=1 --env TRANSFORMERS_OFFLINE=1 \
+  --env NCCL_SOCKET_IFNAME="$NCCL_SOCKET_IFNAME" \
+  --env GLOO_SOCKET_IFNAME="$NCCL_SOCKET_IFNAME" \
+  --env NCCL_NET=IB --env NCCL_IB_DISABLE=0 \
+  --env NCCL_IB_HCA="$NCCL_IB_HCA" --env NCCL_IB_GID_INDEX="$NCCL_IB_GID_INDEX" \
+  --env NCCL_IB_ADDR_FAMILY=AF_INET --env NCCL_IB_ROCE_VERSION_NUM=2 \
+  --env NCCL_CROSS_NIC=1 --env NCCL_CUMEM_ENABLE=0 --env NCCL_NVLS_ENABLE=0 \
+  --env NCCL_IGNORE_CPU_AFFINITY=1 --env NCCL_DEBUG=WARN \
+  --env TORCH_NCCL_DUMP_ON_TIMEOUT=1 --env TORCH_NCCL_ENABLE_MONITORING=1 \
+  --env TORCHINDUCTOR_CACHE_DIR=/cache/torch --env TRITON_CACHE_DIR=/cache/triton \
+  --mount type=bind,src="$MODEL_DIR",dst=/models/qwen38-flash-next,readonly \
+  --mount type=bind,src="$SECRET_FILE",dst=/run/secrets/sglang-api-key,readonly \
+  --mount type=bind,src="$REPO_ROOT/sglang/scripts/launch_secure.py",dst=/opt/qwen/launch_secure.py,readonly \
+  --mount type=bind,src="$REPO_ROOT/sglang/scripts/redact_stream.py",dst=/opt/qwen/redact_stream.py,readonly \
+  --mount type=bind,src="$BUILD_DIR/qwen_sparse_attn_backend.py",dst=/sgl-workspace/sglang/python/sglang/srt/layers/attention/qwen_sparse_attn_backend.py,readonly \
+  --mount type=bind,src="$BUILD_DIR/sm121_varlen.py",dst=/sgl-workspace/sglang/python/sglang/srt/layers/attention/qsa/sm121_varlen.py,readonly \
+  --mount type=bind,src="$BUILD_DIR/schedule_batch.py",dst=/sgl-workspace/sglang/python/sglang/srt/managers/schedule_batch.py,readonly \
+  --mount type=bind,src="$BUILD_DIR/batch_result_processor.py",dst=/sgl-workspace/sglang/python/sglang/srt/managers/scheduler_components/batch_result_processor.py,readonly \
+  --mount type=bind,src="$BUILD_DIR/scheduler.py",dst=/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py,readonly \
+  --mount type=bind,src="$REPO_ROOT/cache/huggingface",dst=/root/.cache/huggingface \
+  --entrypoint bash \
+  "$IMAGE_REF" \
+  -lc "set -o pipefail; python3 -u /opt/qwen/launch_secure.py \
+    --model-path /models/qwen38-flash-next \
+    --served-model-name qwen3.8-flash-next-uncensored \
+    --tp 2 --nnodes 2 --node-rank \"$NODE_RANK\" \
+    --dist-init-addr \"$DIST_INIT_ADDR\" \
+    --quantization modelopt_fp4 --fp4-gemm-backend flashinfer_cutlass \
+    --page-size 64 \
+    --linear-attn-prefill-backend triton --linear-attn-decode-backend flashinfer \
+    --mamba-ssm-dtype bfloat16 --mamba-scheduler-strategy extra_buffer --mamba-track-interval 64 \
+    --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
+    --chunked-prefill-size 4096 \
+    --max-running-requests \"$MAX_RUNNING_REQUESTS\" \
+    --context-length \"$CONTEXT_LENGTH\" \
+    --mem-fraction-static \"$MEM_FRACTION_STATIC\" \
+    --allow-auto-truncate --reasoning-parser auto --tool-call-parser auto --sampling-defaults model \
+    --watchdog-timeout 1200 --enable-metrics --host 0.0.0.0 --port \"$API_PORT\" 2>&1 | python3 -u /opt/qwen/redact_stream.py"
+
+echo "started $NAME rank=$NODE_RANK dist=$DIST_INIT_ADDR tp=2 ctx=$CONTEXT_LENGTH gpu=$MEM_FRACTION_STATIC"

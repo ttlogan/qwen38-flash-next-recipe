@@ -1,9 +1,11 @@
 # Qwen3.8-Flash-Next (Uncensored) — 2-node GX10 Serve Recipe
 
-Production recipe for serving **`orcarouter/Qwen3.8-Flash-Next-Uncensored-NVFP4`**
-(native 262K context, NVFP4 experts, MTP speculative decoding) across a **2-node
-NVIDIA GB10 / DGX Spark cluster** with **tensor-parallel 2 + expert-parallel**, a
-**boot autostart** launcher, and a **bot-autostart / swap** orchestrator.
+Production recipe for serving **`jpezzulli/OrcaRouter-Qwen3.8-Flash-Next-Uncensored-ModelOpt-NVFP4`**
+(the OrcaRouter abliterated/uncensored weights, repackaged into the **ModelOpt NVFP4** format
+with the **PLE table in FP8**) across a **2-node NVIDIA GB10 / DGX Spark cluster**
+with **tensor-parallel 2**, served via **SGLang** (`--tp 2 --nnodes 2`) with
+**NEXTN/MTP** speculative decoding, a **boot autostart** launcher, and a
+**bot-autostart / swap** orchestrator.
 
 This repo is the **sanitized configuration + documentation** for a working setup.
 No API keys, tokens, passwords, real hostnames, or internal IPs are included
@@ -16,9 +18,10 @@ topology — all host/credential values are placeholders).
 
 | Path | What it is | Source |
 |---|---|---|
-| `recipes/qwen38-nvfp4-262k.yaml` | The **tuned recipe**: native 262K ctx, TP=2, EP, MTP3, fp8 KV, `qwen3_coder` tool parser | **Own work** (tuned from the b12x + MiaAI patterns) |
-| `scripts/qwen38-vllm.sh` | **Per-node launcher** (rank 0/1): direct `podman run -d`, HEAD/worker-first, `/health` poll | **Own work** (adapted from GLM lane) |
-| `scripts/swap-model.sh` | **Swap orchestrator**: `--swap <deepseek\|glm\|qwen38>`, idempotent ensure, `/etc/motd` | **Own work** |
+| `sglang/scripts/sglang-qwen38.sh` | **Per-node launcher** (rank 0/1): SGLang `podman run -d`, HEAD/worker-first, SM121 QSA/ token-0 patches | **Own work** (adapted from PixelML 2x-DGX-Spark) |
+| `sglang/patches/` | **SM121 QSA + token-0 guard patches** (required on GB10 for SGLang, from PixelML/MiaAI) | **PixelML** (MIT) |
+| `sglang/scripts/apply-sm121-qsa-patch.sh` + `launch_secure.py` + `redact_stream.py` | **Patch-staging + secure SGLang launch** wrappers | **Own work** (adapted from PixelML) |
+| `scripts/swap-model.sh` | **Swap orchestrator**: `--swap <deepseek\|glm\|qwen38>`, idempotent ensure, `/etc/motd` (dispatches to the SGLang Qwen lane) | **Own work** |
 | `launcher/.env.example` | Cluster fabric + podman config template (placeholders) | **Own work** |
 | `mods/busy-loop-fix/` | Apply-on-launch **thermal fix**: `busy_loop_s` 1 → 0.002 in vLLM `shm_broadcast.py` | **Own work** (same as DS4) |
 | `host-cpu-thermal/` | **Host-level** thermal fix: `schedutil` governor + cap X925 P-cores to 2.8GHz | **Own work** |
@@ -27,21 +30,25 @@ topology — all host/credential values are placeholders).
 
 ## The model
 
-- **`orcarouter/Qwen3.8-Flash-Next-Uncensored-NVFP4`** — Qwen3.8-Flash-Next,
-  abliterated (uncensored) + NVFP4 quantized, with the **full vision + video
-  tower** and **MTP** speculative head preserved. This is the **NVFP4 parent**
-  (170.93 GiB on disk, PLE n-gram table kept **bf16**).
-  **HF repo:** [https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-NVFP4](https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-NVFP4)
+- **`jpezzulli/OrcaRouter-Qwen3.8-Flash-Next-Uncensored-ModelOpt-NVFP4`** — the
+  **OrcaRouter abliterated (uncensored)** Qwen3.8-Flash-Next weights, repackaged
+  into the **ModelOpt NVFP4** format with the **PLE n-gram table in FP8** (so it
+  fits a 2× GB10 at TP2). ~126 GiB on disk. Full vision + video tower and **MTP**
+  speculative head preserved. `hf_quant_config.json` present (`quant_algo: NVFP4`).
+  **HF repo:** [https://huggingface.co/jpezzulli/OrcaRouter-Qwen3.8-Flash-Next-Uncensored-ModelOpt-NVFP4](https://huggingface.co/jpezzulli/OrcaRouter-Qwen3.8-Flash-Next-Uncensored-ModelOpt-NVFP4)
 - **Served name** (API `id`) = `qwen3.8-flash-next-uncensored`.
-- Loaded with **`--load-format safetensors`** (not the b12x loader — this is a
-  NVFP4/compressed-tensors checkpoint, not the b12x B12xModelLoader path).
+- Loaded via **`--quantization modelopt_fp4`** (SGLang) / `--quantization modelopt` (vLLM).
+  The orca-native `-NVFP4` (RadixArk layout, 95 GiB **bf16** PLE) does **NOT** fit a
+  2× GB10 at TP2 and its PLE tensor is misnamed for the loader — the ModelOpt repack is
+  required.
 
-> **Why the NVFP4 parent (170.93 GiB) and not the smaller FP8PLE (123 GiB)?**
-> The NVFP4 parent keeps the 102 GB PLE table in **bf16** (best quality), and the
-> community's own data (`veloGB10`, NVIDIA forum) confirms a 2× GB10 **fits** it
-> with the right KV/memory setup. The FP8PLE derivative (PLE → FP8, −47 GiB) is
-> the fallback if 170 GiB + 262K context won't fit at your gpu-mem target.
-> Both derive from the same uncensored weights; pick based on your memory budget.
+> **Why the ModelOpt NVFP4 repack, not the orca-native NVFP4?** The orca-native
+> `-NVFP4` keeps the 102 GB PLE n-gram table in **bf16** (95 GiB), which at TP2 on a
+> 121 GiB unified pool OOMs alongside the weights + KV, and its `ple_embedding.shard_*`
+> tensor name can't be bound by the vLLM/SGLang loader. The `jpezzulli`/`gorbatjovy`
+> ModelOpt repacks move the PLE to **FP8 E4M3** (~24 GiB/rank at TP2) and name the
+> shards `ngram_embedding.shard_*` + a global `weight_scale` — the form the runtimes
+> expect. Same uncensored weights, same serving behavior, fits the hardware.
 
 ---
 
@@ -156,27 +163,25 @@ works first try.
 
 ### 1. Worker-first (rank 1 before rank 0)
 The head (`rank 0`) owns the TCPStore rendezvous port. Launching the worker first
-avoids the Gloo "Connection reset by peer" init race. `scripts/qwen38-vllm.sh 1`
-(worker) then `scripts/qwen38-vllm.sh 0` (head), each with `--nnodes 2`.
+avoids the Gloo "Connection reset by peer" init race. `sglang/scripts/sglang-qwen38.sh 1`
+(worker) then `sglang/scripts/sglang-qwen38.sh 0` (head), each with `--tp 2 --nnodes 2`.
 
-### 2. podman, rootless, `CONTAINER_RT=podman`
-This lane uses **podman** (rootless, owned by the deploying user), not docker.
-`launcher/.env.example` sets `CONTAINER_RT=podman`. All `docker run` in the
-upstream docs must be `podman run`.
+### 2. podman, rootless
+This lane uses **podman** (rootless, `sudo -u wfoster`), not docker. All `docker run`
+in the upstream SGLang docs must be `podman run`. The PixelML scripts are converted
+in `sglang/scripts/`.
 
-### 3. `/models` mount → HF re-download hang
-The HF cache snapshot weight shards are **symlinks into `/models`**. If the
-container does **not** mount `/models`, those symlinks dangle → `snapshot_download`
-re-downloads from HF Hub and **stalls**. Mount the model path read-only:
-```
--v "$MODEL_PATH:$MODEL_PATH:ro"
-```
-With the mount, the model loads from local disk in minutes, not a network stall.
+### 3. SM121 QSA + token-0 patches (required on GB10)
+SGLang on GB10/SM121 hits a **FlashInfer sparse-decode bug** that emits token id 0 (`!`)
+at long context (sglang#36806, #36537). `sglang/patches/` carries the SM121 QSA fallback
++ token-0 guard (from PixelML/MiaAI, `apply-sm121-qsa-patch.sh`), bind-mounted into the
+running container. **Without these, long-context output corrupts to `!`.**
 
-### 4. `VLLM_ALLOW_LONG_MAX_MODEL_LEN` only >262K
-At native 262K this is **not** set. Only raise it (plus a YaRN `rope_parameters`
-override) if you deliberately stretch past native — which this repo does **not**
-recommend (see the context table).
+### 4. `/models` mount + PLE FP8
+The container mounts the model dir read-only; the ModelOpt NVFP4 checkpoint has the
+PLE n-gram table in **FP8** shards (`ngram_embedding.shard_*`), handled by SGLang. The
+`--quantization modelopt_fp4` path is required — a stock runtime won't bind the FP8 PLE
+under an NVFP4 checkpoint.
 
 ---
 
@@ -213,26 +218,28 @@ WantedBy=multi-user.target
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| Long-context output = all `!` (token id 0) | Missing SM121 QSA fallback / token-0 guard (GB10 FlashInfer sparse-decode bug) | Ensure `sglang/patches/` applied (bind-mounted in the container) |
 | Engine dies past ~24K ctx | Missing top-k patch for the sparse-attention indexer | Install `sparse_attn_indexer_kpool.py` overlay (same as GLM lane) |
-| OOM on boot (171 GiB NVFP4 + KV) | `gpu-memory-utilization` too high, or PLE bf16 too big | Lower to 0.78–0.80; or use the FP8PLE derivative (−47 GiB) |
-| MTP geometry validation failure at 524K+ | MTP draft head stays at 262K while target extended | **Don't go past 262K** — stay native |
-| `kv-cache-dtype fp8` refused | Stock QSA kernel rejects fp8 | Apply the QSA fp8-KV patch, or use `bf16` |
+| OOM on boot (NVFP4 + KV, bf16 PLE) | `mem-fraction-static` too high, or abliterated/NVFP4 bf16 PLE too big | Lower to 0.78-0.80; use the ModelOpt FP8-PLE repack (this repo) |
 | Head never reaches `/health` | Worker not launched first, or `:8000`/TCPStore race | Launch rank 1 before rank 0 |
-| Model re-downloads and stalls | `/models` not mounted in the container | Add `-v "$MODEL_PATH:$MODEL_PATH:ro"` |
+| `modelopt_fp4` refused / PLE not bound | Stock runtime can't bind the FP8 PLE under an NVFP4 checkpoint | Use the pinned SGLang image + `--quantization modelopt_fp4` (and the SM121 patches) |
 | CPU spinning, SoC hot | `busy_loop_s` not patched | Ensure `mods/busy-loop-fix` applied (idempotent) |
 
 ---
 
 ## Attribution / provenance
 
-- **Container image** `vllm/vllm-openai:qwen38-flash-next` — the vLLM
-  `qwen4_exp` runtime (day-0 image for the Qwen4 architecture preview).
-- **Model** `orcarouter/Qwen3.8-Flash-Next-Uncensored-NVFP4` — community
-  uncensored (abliterated) NVFP4 build of `Qwen/Qwen3.8-Flash-Next`.
-- The **QSA fp8-KV patch** and **`busy_loop_s` fix** follow community reports
-  (NVIDIA dev forums, MiaAI-Lab dual-Spark recipe, vLLM recipes page).
+- **Container image** `lmsysorg/sglang@sha256:12d3392bdc...` — the SGLang
+  `qwen4_exp` runtime pinned by the PixelML 2x-DGX-Spark recipe.
+- **Model** `jpezzulli/OrcaRouter-Qwen3.8-Flash-Next-Uncensored-ModelOpt-NVFP4` —
+  the **OrcaRouter** uncensored (abliterated) Qwen3.8-Flash-Next weights,
+  repackaged into **ModelOpt NVFP4 + FP8 PLE** (fits 2x GB10 at TP2).
+  Original abliteration is OrcaRouter's; the ModelOpt repack + runtime packaging
+  is jpezzulli's. Base: `Qwen/Qwen3.8-Flash-Next`.
+- The **SM121 QSA + token-0 patches** are from PixelML/MiaAI (`qwen3-8-flash-next-sglang-2x-dgx-spark`,
+  MIT) — required on GB10/SM121.
 - The **launcher/orchestrator** in this repo is the author's own work, adapted
-  from the GLM + DS4 lanes.
+  from the GLM + DS4 lanes and the PixelML 2x-DGX-Spark SGLang recipe.
 
 > No API keys, tokens, passwords, real hostnames, or internal IPs are present in
 > this repo. Replace the `<HEAD_IP>`/`<WORKER_IP>`/`<HEAD_ROCE_IP>` placeholders
@@ -244,14 +251,15 @@ WantedBy=multi-user.target
 ## Quick reproduce (docs)
 
 1. Confirm the model is on both nodes at `/models/<repo>` (download once, rsync
-   to the worker — or use the launcher's `--sync-model`).
+   to the worker).
 2. Configure `launcher/.env` (copy from `.env.example`): cluster nodes, RoCE
-   interface, `CONTAINER_RT=podman`, HF token.
+   interface, podman, HF token.
 3. Apply `host-cpu-thermal/` and the `mods/busy-loop-fix/` (both idempotent).
-4. Launch worker then head:
+4. Ensure the SGLang image is pulled and the SM121 patches are staged, then
+   launch worker then head:
    ```bash
-   ./scripts/qwen38-vllm.sh 1   # on the worker (rank 1) — FIRST
-   ./scripts/qwen38-vllm.sh 0   # on the head (rank 0)
+   ./sglang/scripts/sglang-qwen38.sh 1   # on the worker (rank 1) — FIRST
+   ./sglang/scripts/sglang-qwen38.sh 0   # on the head (rank 0)
    ```
 5. Wait for `/health` → 200, then sanity-check tool calling + vision, and verify
    thermals (`nvidia-smi` + `cat /sys/class/thermal/thermal_zone*/temp`).
