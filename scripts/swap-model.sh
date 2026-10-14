@@ -24,8 +24,18 @@ launch_lane() {
     qwen38)
       # Qwen is served by SGLang (tp2, 2-node). WORKER (rank 1, raph) must come
       # up FIRST, then head (rank 0). HEAD-first hits the TCPStore rendezvous race.
+      # With --weight-loader-disable-mmap both ranks eagerly read the 126 GB shards
+      # into RAM, so worker+head loading simultaneously deadlocks the unified pool.
+      # Launch worker, WAIT for it to finish loading, then launch head.
       sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
         "bash /home/wfoster/sglang-qwen38.sh 1" 2>/dev/null || true
+      for i in $(seq 1 60); do
+        if sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
+          "sudo -u wfoster podman logs qwen38fn-sglang 2>&1 | grep -qa 'Load weight end'" 2>/dev/null; then
+          echo "   worker loaded after ~$((i*6))s"; break
+        fi
+        sleep 6
+      done
       sudo -u wfoster bash /home/wfoster/sglang-qwen38.sh 0
       ;;
   esac
