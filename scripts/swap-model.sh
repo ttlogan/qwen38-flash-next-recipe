@@ -80,9 +80,22 @@ served_name() {
     *)                echo "$1" ;;
   esac
 }
+# Auth header for a lane's /v1/models probe. SGLang (qwen) is bearer-gated; the
+# vLLM lanes (deepseek/glm) answer open. Read the lane's key file if present,
+# else send no header. The deployed Qwen launcher reads the same
+# $REPO_ROOT/.sglang-api-key.
+lane_key() {
+  local f
+  case "$1" in
+    qwen38) f="${Qwen_KEY_FILE:-/home/wfoster/qwen38-flash-next-recipe/.sglang-api-key}" ;;
+    *)      return 0 ;;
+  esac
+  [ -r "$f" ] && { echo "Authorization: Bearer $(tr -d '\n' < "$f")"; }
+}
 model_serving() {
   local want; want=$(served_name "$1")
-  curl -fsS http://127.0.0.1:8000/v1/models 2>/dev/null | grep -qi "$want"
+  local hdr; hdr=$(lane_key "$1")
+  curl -fsS -H "$hdr" http://127.0.0.1:8000/v1/models 2>/dev/null | grep -qi "$want"
 }
 
 stop_stack() {
@@ -110,7 +123,13 @@ case "${1:-}" in
       echo "serving: $(curl -s http://127.0.0.1:8000/v1/models | tr -d '\n')"
       echo "current_model: $(read_state)"
     else
-      echo "NOT serving on :8000"
+      hdr=$(lane_key "$(read_state)")
+      if [ -n "$hdr" ] && curl -fsS -H "$hdr" http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then
+        echo "serving (auth): $(curl -s -H "$hdr" http://127.0.0.1:8000/v1/models | tr -d '\n')"
+        echo "current_model: $(read_state)"
+      else
+        echo "NOT serving on :8000"
+      fi
     fi
     exit 0
     ;;
