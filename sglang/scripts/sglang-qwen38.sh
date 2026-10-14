@@ -20,6 +20,9 @@ NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-enp1s0f0np0}"
 NCCL_IB_HCA="${NCCL_IB_HCA:-rocep1s0f0}"
 NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-3}"
 NCCL_IB_ADDR_RANGE="${NCCL_IB_ADDR_RANGE:-192.168.177.0/24}"
+NCCL_HOME="${NCCL_HOME:-$HOME/nccl/build}"
+NCCL_PRELOAD="${NCCL_PRELOAD:-$NCCL_HOME/lib/libnccl.so.2}"
+[ -f "$NCCL_PRELOAD" ] || NCCL_PRELOAD=""
 NAME="${NAME:-qwen38fn-sglang}"
 
 case "$NODE_RANK" in
@@ -85,6 +88,9 @@ sudo -u wfoster podman run --detach \
   --env TP_SOCKET_IFNAME="$NCCL_SOCKET_IFNAME" --env MN_IF_NAME="$NCCL_SOCKET_IFNAME" \
   --env NCCL_IGNORE_CPU_AFFINITY=1 --env NCCL_DEBUG=WARN \
   --env TORCH_NCCL_DUMP_ON_TIMEOUT=1 --env TORCH_NCCL_ENABLE_MONITORING=1 \
+  --env NCCL_HOME="$NCCL_HOME" \
+  ${NCCL_PRELOAD:+--env "LD_PRELOAD=$NCCL_PRELOAD"} \
+  ${NCCL_PRELOAD:+--mount "type=bind,src=$NCCL_PRELOAD,dst=/root/nccl/build/lib/libnccl.so.2,readonly"} \
   --env TORCHINDUCTOR_CACHE_DIR=/cache/torch --env TRITON_CACHE_DIR=/cache/triton \
   --env SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 \
   ${OVERRIDE_JSON:+--env "OVERRIDE_JSON=$OVERRIDE_JSON"} \
