@@ -23,8 +23,8 @@ topology — all host/credential values are placeholders).
 | `sglang/scripts/apply-sm121-qsa-patch.sh` + `launch_secure.py` + `redact_stream.py` | **Patch-staging + secure SGLang launch** wrappers | **Own work** (adapted from PixelML) |
 | `scripts/swap-model.sh` | **Swap orchestrator**: `--swap <deepseek\|glm\|qwen38>`, idempotent ensure, `/etc/motd` (dispatches to the SGLang Qwen lane) | **Own work** |
 | `launcher/.env.example` | Cluster fabric + podman config template (placeholders) | **Own work** |
-| `mods/busy-loop-fix/` | Apply-on-launch **thermal fix**: `busy_loop_s` 1 → 0.002 in vLLM `shm_broadcast.py` | **Own work** (same as DS4) |
-| `host-cpu-thermal/` | **Host-level** thermal fix: `schedutil` governor + cap X925 P-cores to 2.8GHz | **Own work** |
+| `mods/busy-loop-fix/` | **vLLM-only** thermal fix (`busy_loop_s` 1 → 0.002 in vLLM `shm_broadcast.py`); not used by the SGLang Qwen lane | **Own work** (same as DS4) |
+| `host-cpu-thermal/` | **Host-level** thermal fix (works for vLLM + SGLang): `schedutil` governor + cap X925 P-cores to 2.8GHz | **Own work** |
 
 ---
 
@@ -76,38 +76,36 @@ community data is unambiguous that stretching past native hurts:
 
 | Context | YaRN factor | Verdict |
 |---|---|---|
-| **262K (native)** | — | **Default. Vetted, quality-preserving, memory-feasible.** |
-| ~390K | 1.5× | Max "workable" stretch per community testing; already degraded. |
-| 500K | 2.0× | **Severe degradation** (community-measured), and the MTP draft head **stays at 262K** → Mamba/cache geometry validation failures at 524K+ (reported vLLM bug). |
-| 1M | 4.0× | **Not recommended.** Static YaRN degrades short-context quality too (this checkpoint ships `rope_type: default`, never trained on a YaRN basis); the recipe authors' own 256K test hit a token-0 loop; 20-min cold prefill at 1M makes agentic work unusable. |
+|| **262K (native)** | — | **Default. Validated.** MTP/quality preserved, memory-feasible. Run concurrently for throughput. |
+|| 512K (YaRN ×2) | 2.0× | **Validated** (SGLang, model-card point). Good middle ground for long-context agentic work. |
+|| 1M (YaRN ×4) | 4.0× | **Validated on 2× Spark via SGLang** (maci0/MiaAI: ~40-44 t/s single, ~148-155 agg at 24 conc, KV pool >1M). Premium: SGLang **clamps concurrency** (GDN/mamba state pool, not KV, is the limit ~4-10 conc) and prefill is slower. Use for deep-context, not throughput. |
 
-**Practical rule:** run **262K per thread** and use concurrent subagents /
-session compaction for long-horizon work instead of forcing one giant context.
-That matches the model's training and avoids the MTP long-context bug entirely.
+**Practical rule:** run **262K per thread** (best quality + full throughput) and use
+concurrent subagents/session compaction for long-horizon work. For a single
+very-long-context job, 512K/1M via YaRN is validated on SGLang — see the tuning
+battery which will lock the best ctx (262K vs 512K vs 1M) on the numbers.
 
 ---
 
-## Tuning (why these values)
+## Tuning (SGLang values)
 
-Serving parameters for the 180B (6B active) MoE at 262K ctx on 2× GB10, TP=2+EP:
+Serving parameters for the 180B (6B active) MoE at 262K ctx on 2× GB10, TP=2 (SGLang):
 
-| Config | max-num-seqs | max-num-batched-tokens | gpu-mem | KV dtype | Spec (MTP) |
+| Config | max-running-requests | chunked-prefill | mem-fraction | KV dtype | Spec (NEXTN) |
 |---|---|---|---|---|---|
-| baseline | 8 | 8192 | 0.80 | fp8 | 3 |
+| baseline | 36 | 4096 | 0.80 | fp8_e4m3 | 3 |
 
-- **`max-num-seqs 8`** — the agentic/tool-calling concurrency sweet spot
-  (community reports 8 concurrent streams show no degradation on this model's
-  cluster).
-- **`max-num-batched-tokens 8192`** — vLLM's common sweet spot.
-- **`gpu-memory-utilization 0.80`** — the MiaAI dual-Spark measured value; at
-  `0.835` the box had <1 GiB MemAvailable per node under load (OOM risk). `0.80`
-  at 262K gave ~32 GiB KV / ~3.65M fp8 cache tokens (13.9× the 262K window) on
-  the community kit.
-- **`kv-cache-dtype fp8`** — 1.70× the cache tokens of bf16 per GiB; no measured
-  reasoning/needle regression on the MiaAI kit (12/12 both). Requires the QSA
-  fp8-KV patch (see below).
-- **`speculative-config {mtp, num_speculative_tokens:3}`** — the model's built-in
-  MTP head; 3 is the tuned depth.
+- **`max-running-requests 36`** — PixelML-verified 2×-DGX-Spark value (MTP state limits the effective scheduler count).
+- **`chunked-prefill-size 4096`** — the PixelML/MiaAI measured sweet spot on GB10.
+- **`mem-fraction-static 0.80`** — PixelML-verified (keep ≤0.78 if you see NVRM-OOM).
+- **`kv-cache-dtype fp8_e4m3`** — 1.70× the cache tokens of bf16; SGLang handles the FP8 PLE + KV.
+- **`speculative-algorithm NEXTN (3/1/4)`** — the model's built-in MTP head; 3 steps is the tuned depth.
+- **`--quantization modelopt_fp4 --fp4-gemm-backend flashinfer_cutlass`** — required for the ModelOpt NVFP4 + the GB10 (SM12x) MoE path.
+- **`--stream-interval 32`** — GB10 detokenizer-stall mitigation.
+
+> **Tuning battery:** the repo's `tuning/` benchmarks ladder `gpu_mem`/`max-num-seqs`/
+> MTP/context to lock the best values for SGLang on this cluster (mirrors the DS4 T4
+> lock). Results recorded in `tuning/RESULTS.md`.
 
 ---
 
@@ -127,29 +125,23 @@ patch.**
 
 ---
 
-## The thermal fix (why `busy_loop_s`)
+## The thermal fix (host-level, runtime-agnostic)
 
-On GB10 the CPU and GPU share one die/heatsink. Under TP≥2 decode, vLLM's
-inter-process queue (`shm_broadcast.py`) **spins for up to 1 second**
-(`busy_loop_s: float = 1`) instead of sleeping, holding 3-4 P-cores at 3.9 GHz
-continuously — roughly **half the thermal budget millimeters from the GPU**.
+On GB10 the CPU and GPU share one die/heatsink. Under TP≥2 decode the 10
+Cortex-X925 P-cores boost to ~3.9GHz and push the SoC ACPI zones hot, heating the
+board even when the GPU is cool.
 
-`mods/busy-loop-fix/run.sh` patches it to **0.002** on every container launch
-(idempotent):
-```
-busy_loop_s: float = 1,  ->  busy_loop_s: float = 0.002,
-```
-**Measured effect (DS4 lane, same hardware):** vLLM idle CPU ~57-79% → **4%**;
-board (acpitz) temp ~85°C → **~51°C**; GPU ~70°C → **~48°C**. Use 0.002, not 0.
-
-### Host-level: governor + performance-core cap (`host-cpu-thermal/`)
-
-Same as the DS4 lane. The 10 Cortex-X925 P-cores boost to 3.9GHz and push the SoC
-ACPI zones to ~90°C. `cpu-governor.service` + `gx10-cpu-cap.sh`:
+**`host-cpu-thermal/`** (systemd, persistent, works for **both vLLM and SGLang**):
 - Governor `performance` → `schedutil` (idle cores drop to ~338MHz).
 - Cap the 10 X925 P-cores to **2.8GHz** (the single biggest lever).
 - **Measured effect:** SoC −9°C, P-core cluster −14°C, GPU −1.7°C; single-stream
   token rate unchanged, 8 concurrent streams ≈ −5%.
+
+> **vLLM note:** the DS4 lane's `mods/busy-loop-fix` (patches `busy_loop_s 1→0.002`
+> in vLLM's `shm_broadcast.py`) is **vLLM-specific** — SGLang's scheduler uses a
+> different IPC path, so that patch does **not** apply to the SGLang Qwen lane.
+> The **host-cpu-thermal** fix above is the transferable lever and is already
+> applied on both nodes.
 - `nvidia-smi -pl` is a **NO-OP** on GB10 — do not use a power-limit service.
 
 See `host-cpu-thermal/README.md` for install/apply/verify/revert.
@@ -197,7 +189,7 @@ under an NVFP4 checkpoint.
 **Boot timer** (systemd, oneshot):
 ```ini
 [Unit]
-Description=Bring up the default vLLM model on the 2-node GX10 cluster
+Description=Bring up the last-used model (via swap-model.sh) on the 2-node GX10 cluster
 After=network.target systemd-user-sessions.service
 Wants=network.target
 
