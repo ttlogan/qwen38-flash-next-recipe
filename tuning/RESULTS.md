@@ -117,3 +117,78 @@ Prefill (realistic varied text, max_tokens=8):
 
 **`--max-running-requests 4`, context 262K native, mem 0.80, head-first launch.**
 Stable through c=8, ~40 tok/s single, ~117 tok/s agg at c=4, prefill ~2900 tok/s.
+
+## Tuning ladder — baseline (run 2026-10-14, current running config)
+
+Confirmed live server_args: `max_running_requests=4`, `mem_fraction_static=0.8`,
+`chunked_prefill_size=4096`, `speculative_algorithm=NEXTN`, `speculative_num_steps=3`,
+`page_size=64`, `disable_flashinfer_autotune=False`, mamba `extra_buffer`,
+`context_length=262144`. (This is the baseline every T1/T2/T3 arm is measured against.)
+
+| Metric | Value |
+|---|---|
+| c=1 single | 40.27 tok/s |
+| c=2 agg | 67.05 (33.53/stream) |
+| c=4 agg | 117.30 (29.33/stream) |
+| c=6 agg | 106.43 (queued) |
+| c=8 agg | 120.51 (15.06/stream, no crash) |
+| prefill 50K | ~2977 tok/s |
+| prefill 100K | ~2937 tok/s |
+
+Against DS4 (1M): DS4 c=1 28.65 / c=4 agg 51.06 / c=8 agg 53.21. Qwen beats DS4 by
++40% single, +130% agg at c=4, +126% at c=8.
+
+_Arms pending the domain-expert T1/T2/T3 ladder (deleg_0fcc26ae)._
+
+## Tuning ladder (deleg_0fcc26ae, 2026-10-14)
+
+12-arm ladder from the deep inference domain-expert team. Ranked by (gain/risk).
+**Biggest lever = concurrency**, gated by the NEXTN/hybrid spec-decode crash
+(sglang#37052/#37111). **Second lever = prefill** (safe, chunked-prefill-size).
+
+| Arm | Change | Expected | Risk | Run? |
+|---|---|---|---|---|
+| T1 | chunked-prefill-size 4096->8192 (probe 2048/16384) | prefill +15-40% | LOW (isolated to prefill) | **YES** |
+| T2 | re-add disable-flashinfer-autotune + cuda-graph-max-bs 8 + disable-cuda-graph-padding | stability, low direct gain | LOW (not the spec path) | maybe |
+| T3 | --speculative-algorithm NONE + measure decode cost | de-risk gate; removes crash root cause | MEDIUM (perf regression only) | **YES** |
+| T4 | max-running-requests 8 (only after T3) | 120->130-145 agg | LOW once NEXTN off; HIGH with NEXTN | after T3 |
+| T5 | max-running-requests 16 (KV-pool fit check) | 120->140-155 agg | MED-HIGH (KV/OOM) | **skip** (KV/OOM risk) |
+| T6 | page-size 32 (probe 16) | raise effective concurrency at 262K | MEDIUM | maybe |
+| T7 | mamba-track-interval 128 + strategy sweep | 5-15% mamba decode; KV savings | MEDIUM | maybe |
+| T8 | mem-fraction 0.85 (0.75 control) | +0-20% if KV-bound | MED-HIGH (unified-mem spill/OOM) | **skip** (OOM/wedge) |
+| T9 | fp4-gemm / attn backend sweep | 5-15% | LOW-MED | maybe |
+| T10 | PLE/NGC n-gram offload + spec-draft decoupled | higher effective concurrency | MEDIUM (PLE hot path latency) | maybe |
+| T11 | NCCL/env + graph-capture-size probe | small | LOW (env-only) | maybe |
+| T12 | speculative-num-steps 4 (probe 5) | single +10-25% | **HIGH** (crash region) | **skip** (crash region) |
+
+_Constraints: no node cluster restart. Skip T8/T5/T12 (OOM/wedge or the NEXTN crash region)._
+
+### T1/T3 run (2026-10-14) — IMPORTANT NEGATIVE RESULTS
+
+**T1 — chunked-prefill-size 8192** (was 4096), NEXTN 3 unchanged:
+- Prefill 50K: **2124 tok/s** (baseline 2966 — LOWER, noisy/cache artifact)
+- Prefill 100K: **3030 tok/s** (baseline 2941 — ~flat)
+- Decode: c=1 42.98, c=2 48.26, then **CRASHED at c=4** (watchdog kill_process_tree)
+- **Verdict: T1 is a NULL result.** chunked-prefill 8192 did NOT improve prefill
+  (flat-to-worse), and the decode path still crashed under concurrency.
+
+**T3 — speculative-algorithm NONE** (was NEXTN), chunked back to 4096:
+- **CRASHED during load/warmup** (CUDA coredump exit, watchdog kill) ~10 min in.
+- **Verdict: T3 did NOT stabilize it.** Disabling NEXTN did NOT remove the crash.
+
+**CONCLUSION (disproves the research team's #1 lever premise):** the crash is
+NOT the NEXTN/hybrid spec-decode transition. It occurs with NEXTN on (T1) AND
+with NEXTN off (T3), and even during the load/warmup phase. It is a
+**nondeterministic SM121 device-side fault** on the hybrid GDN/mamba+QSA path
+(sglang#37052/#37111 class), NOT a deterministic flag fault. The baseline
+config (chunked 4096, NEXTN 3) was stable for hours; T1 (chunked 8192) and T3
+(NEXTN off) both crashed, so **keep the baseline** (chunked 4096, NEXTN 3,
+max-running-requests 4) as the stable serving spec.
+
+Host was healthy during the crashes: 96 GB free, thermals 49C, GPU 47C. Not
+OOM, not thermal throttle.
+
+_T1/T3 both reverted. Baseline restored. Remaining ladder arms (T2/T4/T6/etc.)
+carry the same SM121 nondeterministic-crash risk and are NOT safe to sweep
+until the underlying device-side fault is understood (needs an SGLang fix or a
+different runtime path)._
