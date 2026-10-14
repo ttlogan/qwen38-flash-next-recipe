@@ -185,7 +185,7 @@ class ModelTui(App):
         yield Header()
         with Container(id="list-screen"):
             yield Label("GX10 Models (↑/↓ select, Enter action, q quit)", id="title")
-            yield ModelList(*[self._item(m) for m in MODELS], id="models")
+            yield ModelList(id="models")
             yield Label("", id="hint")
         yield Footer()
 
@@ -215,6 +215,11 @@ class ModelTui(App):
         lv.clear()
         for m in MODELS:
             lv.append(self._item(m))
+        # Pre-highlight the active model on launch.
+        if self.active:
+            idx = next((i for i, (k, _, _) in enumerate(MODELS) if k == self.active), None)
+            if idx is not None:
+                lv.index = idx
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         key = event.item.id  # type: ignore[attr-defined]
