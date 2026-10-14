@@ -15,6 +15,9 @@ API_PORT="${API_PORT:-8000}"
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
 MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-4}"
 MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.80}"
+CHUNKED_PREFILL_SIZE="${CHUNKED_PREFILL_SIZE:-4096}"
+SPEC_ALGO="${SPEC_ALGO:-NEXTN}"
+SPEC_NUM_STEPS="${SPEC_NUM_STEPS:-3}"
 NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-enp1s0f0np0}"
 NCCL_IB_HCA="${NCCL_IB_HCA:-rocep1s0f0}"
 NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-3}"
@@ -49,7 +52,10 @@ sudo -u wfoster podman run --detach \
   --env DIST_INIT_ADDR="$DIST_INIT_ADDR" \
   --env API_PORT="$API_PORT" \
   --env CONTEXT_LENGTH="$CONTEXT_LENGTH" \
-  --env MAX_RUNNING_REQUESTS="$MAX_RUNNING_REQUESTS" \
+    --env MAX_RUNNING_REQUESTS=\"$MAX_RUNNING_REQUESTS\"\
+  --env CHUNKED_PREFILL_SIZE=\"$CHUNKED_PREFILL_SIZE\" \
+  --env SPEC_ALGO=\"$SPEC_ALGO\" \
+  --env SPEC_NUM_STEPS=\"$SPEC_NUM_STEPS\" \
   --env MEM_FRACTION_STATIC="$MEM_FRACTION_STATIC" \
   --env SGLANG_API_KEY_FILE=/run/secrets/sglang-api-key \
   --env HF_HUB_OFFLINE=1 --env TRANSFORMERS_OFFLINE=1 \
@@ -86,8 +92,8 @@ sudo -u wfoster podman run --detach \
     --page-size 64 \
     --linear-attn-prefill-backend triton --linear-attn-decode-backend flashinfer \
     --mamba-ssm-dtype bfloat16 --mamba-scheduler-strategy extra_buffer --mamba-track-interval 64 \
-    --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
-    --chunked-prefill-size 4096 \
+    --speculative-algorithm \"$SPEC_ALGO\" --speculative-num-steps \"$SPEC_NUM_STEPS\" --speculative-eagle-topk 1 --speculative-num-draft-tokens 4\
+    --chunked-prefill-size \"$CHUNKED_PREFILL_SIZE\"\
     --max-running-requests \"$MAX_RUNNING_REQUESTS\" \
     --context-length \"$CONTEXT_LENGTH\" \
     --mem-fraction-static \"$MEM_FRACTION_STATIC\" \
