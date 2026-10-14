@@ -20,9 +20,10 @@ NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-enp1s0f0np0}"
 NCCL_IB_HCA="${NCCL_IB_HCA:-rocep1s0f0}"
 NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-3}"
 NCCL_IB_ADDR_RANGE="${NCCL_IB_ADDR_RANGE:-192.168.177.0/24}"
-NCCL_HOME="${NCCL_HOME:-$HOME/nccl/build}"
+NCCL_HOME="${NCCL_HOME:-$HOME/nccl230/build}"
 # Resolve the symlink to the real .so so LD_PRELOAD doesn't hit a dangling pointer.
 _NCCL_REAL="$(readlink -f "$NCCL_HOME/lib/libnccl.so.2" 2>/dev/null)"
+[ -n "$_NCCL_REAL" ] || _NCCL_REAL="$NCCL_HOME/lib/libnccl.so.2"
 NCCL_PRELOAD="${NCCL_PRELOAD:-$_NCCL_REAL}"
 [ -f "$NCCL_PRELOAD" ] || NCCL_PRELOAD=""
 NAME="${NAME:-qwen38fn-sglang}"
@@ -88,16 +89,21 @@ sudo -u wfoster podman run --detach \
   --env NCCL_IB_GID_INDEX="$NCCL_IB_GID_INDEX" \
   --env NCCL_IB_ADDR_RANGE="$NCCL_IB_ADDR_RANGE" \
   --env NCCL_IB_ADDR_FAMILY=AF_INET --env NCCL_IB_ROCE_VERSION_NUM=2 \
-  --env NCCL_MAX_NCHANNELS=4 --env NCCL_MIN_NCHANNELS=4 --env NCCL_CROSS_NIC=0 --env NCCL_CUMEM_ENABLE=0 --env NCCL_NVLS_ENABLE=0 \
+  --env NCCL_IB_TIMEOUT=22 --env NCCL_IB_RETRY_CNT=7 \
+  --env NCCL_IB_SUBNET_AWARE_ROUTING=1 --env NCCL_IB_MERGE_NICS=0 \
+  --env NCCL_MAX_NCHANNELS=4 --env NCCL_MIN_NCHANNELS=4 --env NCCL_CROSS_NIC=1 \
+  --env NCCL_CUMEM_ENABLE=0 --env NCCL_NVLS_ENABLE=0 --env NCCL_NET_PLUGIN=none \
   --env TORCH_CUDA_ARCH_LIST=12.1a --env FLASHINFER_CUDA_ARCH_LIST=12.1a \
   --env TORCH_NCCL_ASYNC_ERROR_HANDLING=1 \
-  --env NCCL_IB_MERGE_NICS=0 \
   --env TP_SOCKET_IFNAME="$NCCL_SOCKET_IFNAME" --env MN_IF_NAME="$NCCL_SOCKET_IFNAME" \
   --env NCCL_IGNORE_CPU_AFFINITY=1 --env NCCL_DEBUG=INFO --env NCCL_DEBUG_SUBSYS=COLL \
+  --env NCCL_ASYNC_ERROR_HANDLING=1 --env NCCL_BLOCKING_WAIT=1 \
+  --env TORCH_DISTRIBUTED_TIMEOUT=1800 \
   --env TORCH_NCCL_DUMP_ON_TIMEOUT=1 --env TORCH_NCCL_ENABLE_MONITORING=1 \
   --env NCCL_HOME="/usr/local/lib" \
   ${NCCL_PRELOAD:+--env "LD_PRELOAD=/usr/local/lib/libnccl.so.2"} \
   ${NCCL_PRELOAD:+--mount "type=bind,src=$NCCL_PRELOAD,dst=/usr/local/lib/libnccl.so.2,readonly"} \
+  ${NCCL_PRELOAD:+--mount "type=bind,src=$NCCL_PRELOAD,dst=/usr/local/lib/python3.12/dist-packages/nvidia/nccl/lib/libnccl.so.2,readonly"} \
   --env TORCHINDUCTOR_CACHE_DIR=/cache/torch --env TRITON_CACHE_DIR=/cache/triton \
   --env SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 \
   ${OVERRIDE_JSON:+--env "OVERRIDE_JSON=$OVERRIDE_JSON"} \
