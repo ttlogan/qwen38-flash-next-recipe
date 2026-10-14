@@ -146,6 +146,7 @@ class ProgressScreen(ModalScreen[None]):
 
 class ModelTui(App):
     TITLE = "GX10 Model Manager"
+    BINDINGS = [("q", "quit", "Quit")]
     CSS = """
     #list-screen {
         padding: 1 2;
@@ -198,6 +199,9 @@ class ModelTui(App):
         super().__init__()
         self.active: str | None = None
         self.selected: str = MODELS[0][0]
+
+    def action_quit(self) -> None:
+        self.exit()
 
     def compose(self) -> ComposeResult:
         # Compute active at compose time so the rows are built in compose() and
