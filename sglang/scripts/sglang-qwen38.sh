@@ -93,7 +93,7 @@ sudo -u wfoster podman run --detach \
   --env TORCH_NCCL_ASYNC_ERROR_HANDLING=1 \
   --env NCCL_IB_MERGE_NICS=0 \
   --env TP_SOCKET_IFNAME="$NCCL_SOCKET_IFNAME" --env MN_IF_NAME="$NCCL_SOCKET_IFNAME" \
-  --env NCCL_IGNORE_CPU_AFFINITY=1 --env NCCL_DEBUG=WARN \
+  --env NCCL_IGNORE_CPU_AFFINITY=1 --env NCCL_DEBUG=INFO --env NCCL_DEBUG_SUBSYS=COLL \
   --env TORCH_NCCL_DUMP_ON_TIMEOUT=1 --env TORCH_NCCL_ENABLE_MONITORING=1 \
   --env NCCL_HOME="/usr/local/lib" \
   ${NCCL_PRELOAD:+--env "LD_PRELOAD=/usr/local/lib/libnccl.so.2"} \
