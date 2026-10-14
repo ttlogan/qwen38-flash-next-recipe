@@ -16,6 +16,7 @@ served model name comes from `swap-model.sh --health`.
 from __future__ import annotations
 
 import asyncio
+import os
 import shlex
 import subprocess
 import sys
@@ -23,7 +24,7 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
-from textual.widgets import Footer, Header, Label, ListItem, ListView, LoadingIndicator
+from textual.widgets import Footer, Header, Label, ListItem, ListView, LoadingIndicator, Log
 from textual.screen import ModalScreen
 
 SWAP = "/usr/local/bin/swap-model.sh"
@@ -34,6 +35,13 @@ MODELS = [
     ("glm", "GLM-5.3-Flash", "vLLM (dflash2), 262K ctx"),
     ("qwen38", "Qwen3.8-Flash-Next-Uncensored", "SGLang (tp2), 262K ctx"),
 ]
+
+# lane_key -> rootless podman container name (for `podman logs`). Sync with swap-model.sh.
+CONTAINERS = {
+    "deepseek": "b12x-vllm-node",
+    "glm": "vllm_glm53",
+    "qwen38": "qwen38fn-sglang",
+}
 
 
 def run(args: list[str], timeout: int = 1200, capture: bool = True) -> subprocess.CompletedProcess:
@@ -124,25 +132,70 @@ class ConfirmScreen(ModalScreen[bool]):
 
 
 class ProgressScreen(ModalScreen[None]):
-    """Informative process dialogue shown while a swap/stop/restart runs."""
+    """Informative process dialogue shown while a swap/stop/restart runs.
 
-    def __init__(self, heading: str):
+    Tails the lane container's `podman logs -f` into a collapsible window so the
+    user can watch the model actually load (weights, CUDA graph capture, server
+    started). `l` toggles the log pane; anything else scrolls the log.
+    """
+
+    BINDINGS = [("escape", "cancel", "Cancel"), ("l", "toggle_log", "Show/Hide Log")]
+
+    def __init__(self, heading: str, container: str | None):
         super().__init__()
         self.heading = heading
+        self.container = container
+        self._log_proc: subprocess.Popen | None = None
+        self._log_on = False
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="progress"):
             yield LoadingIndicator()
             yield Label(self.heading, id="progress-msg")
-            yield Label("", id="progress-log")
+            with Vertical(id="log-pane"):
+                yield Log(id="log")
 
-    def on_mount(self) -> None:
-        self.set_interval(1.0, self.tick)
+    def action_toggle_log(self) -> None:
+        self._log_on = not self._log_on
+        self.query_one("#log-pane").display = self._log_on
+        if self._log_on and not self._log_proc and self.container:
+            self._start_tail()
+
+    def _start_tail(self) -> None:
+        # `sudo -u wfoster` because the serving containers are rootless podman.
+        if os.geteuid() == 0:
+            cmd = ["sudo", "-u", "wfoster", "podman", "logs", "-f", self.container]
+        else:
+            cmd = ["podman", "logs", "-f", self.container]
+        self._log_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        self._log_task = asyncio.create_task(self._pump_log())
+
+    async def _pump_log(self) -> None:
+        proc = self._log_proc
+        if proc is None or proc.stdout is None:
+            return
+        log = self.query_one("#log", Log)
+        # Read the pipe on a worker thread so a stalled `podman logs -f` never
+        # blocks the event loop; the read is what yields, not us.
+        reader = proc.stdout
+        loop = asyncio.get_running_loop()
+        while True:
+            line = await loop.run_in_executor(None, reader.readline)
+            if not line:
+                break
+            log.write_line(line.rstrip())
+            if len(log._lines) > 300:  # type: ignore[attr-defined]
+                del log._lines[: len(log._lines) - 300]  # type: ignore[attr-defined]
+
+    def on_unmount(self) -> None:
+        if self._log_proc:
+            self._log_proc.kill()
 
     def tick(self) -> None:
-        # cheap liveness: re-pull the container state summary from the tail of the test
-        # log is overkill; instead just reassure the user we are alive.
-        self.query_one("#progress-log", Label).update(self.heading)
+        pass
 
 
 class ModelTui(App):
@@ -186,12 +239,18 @@ class ModelTui(App):
         border: thick $primary;
         background: $surface;
     }
+    #log-pane {
+        height: 60%;
+        margin-top: 1;
+        display: none;
+        border: solid $primary;
+    }
+    #log {
+        height: 100%;
+        background: $surface;
+    }
     #progress-msg {
         text-style: bold;
-        margin-top: 1;
-    }
-    #progress-log {
-        color: $text-muted;
         margin-top: 1;
     }
     """
@@ -286,10 +345,10 @@ class ModelTui(App):
             self._suppress_next_select = True
             return
         args = {"switch": ["--swap", key], "restart": ["restart"], "stop": ["--stop"]}[choice]
-        self._run_action(args, f"{choice.capitalize()} {key}...")
+        self._run_action(args, f"{choice.capitalize()} {key}...", CONTAINERS.get(key))
 
-    def _run_action(self, args: list[str], heading: str) -> None:
-        self.push_screen(ProgressScreen(heading))
+    def _run_action(self, args: list[str], heading: str, container: str | None = None) -> None:
+        self.push_screen(ProgressScreen(heading, container))
         # Run the model action off the event loop so the UI (LoadingIndicator)
         # stays live during the multi-minute load. asyncio.to_thread keeps the
         # blocking subprocess off the loop; everything else stays on the app
