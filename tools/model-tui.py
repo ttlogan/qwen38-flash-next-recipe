@@ -289,8 +289,11 @@ class ModelTui(App):
 
     def _run_action(self, args: list[str], heading: str) -> None:
         self.push_screen(ProgressScreen(heading))
+        self._run_worker(self._action_worker(args, heading), group="action", exclusive=True)
+
+    def _action_worker(self, args: list[str], heading: str):
         proc: subprocess.CompletedProcess | None = None
-        err = None
+        err: str | None = None
         try:
             proc = run(args)
             self.active = active_model()
@@ -299,19 +302,22 @@ class ModelTui(App):
         except Exception as e:  # noqa: BLE001
             err = f"error: {e}"
         finally:
-            self.pop_screen()
-            self._rebuild_list()
-            if err:
-                status = "FAILED"
-                tail = err
-            elif proc is not None:
-                status = "ok" if proc.returncode == 0 else f"FAILED ({proc.returncode})"
-                tail = (proc.stdout.strip() + "\n" + proc.stderr.strip()).strip()[-500:]
-            else:
-                status = "?"
-                tail = ""
-            self.query_one("#hint", Label).update(f"{status}: swap-model.sh {shlex.join(args)}\n{tail}")
-            self.refresh_bindings()
+            self.call_from_thread(self._finish_action, proc, err, args)
+
+    def _finish_action(self, proc: subprocess.CompletedProcess | None, err: str | None, args: list[str]) -> None:
+        self.pop_screen()
+        self._rebuild_list()
+        if err:
+            status = "FAILED"
+            tail = err
+        elif proc is not None:
+            status = "ok" if proc.returncode == 0 else f"FAILED ({proc.returncode})"
+            tail = (proc.stdout.strip() + "\n" + proc.stderr.strip()).strip()[-500:]
+        else:
+            status = "?"
+            tail = ""
+        self.query_one("#hint", Label).update(f"{status}: swap-model.sh {shlex.join(args)}\n{tail}")
+        self.refresh_bindings()
 
 
 if __name__ == "__main__":
