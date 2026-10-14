@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Vertical
+from textual.containers import Vertical
 from textual.widgets import Footer, Header, Label, ListItem, ListView, LoadingIndicator
 from textual.screen import ModalScreen
 
@@ -185,10 +185,9 @@ class ModelTui(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Container(id="list-screen"):
-            yield Label("GX10 Models (↑/↓ select, Enter action, q quit)", id="title")
-            yield ListView(id="models")
-            yield Label("", id="hint")
+        yield Label("GX10 Models (↑/↓ select, Enter action, q quit)", id="title")
+        yield ListView(id="models")
+        yield Label("", id="hint")
         yield Footer()
 
     def _item(self, m: tuple[str, str, str]) -> ListItem:
