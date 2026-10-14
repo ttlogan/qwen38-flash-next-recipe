@@ -80,10 +80,15 @@ community data is unambiguous that stretching past native hurts:
 || 512K (YaRN ×2) | 2.0× | **Validated** (SGLang, model-card point). Good middle ground for long-context agentic work. |
 || 1M (YaRN ×4) | 4.0× | **Validated on 2× Spark via SGLang** (maci0/MiaAI: ~40-44 t/s single, ~148-155 agg at 24 conc, KV pool >1M). Premium: SGLang **clamps concurrency** (GDN/mamba state pool, not KV, is the limit ~4-10 conc) and prefill is slower. Use for deep-context, not throughput. |
 
-**Practical rule:** run **262K per thread** (best quality + full throughput) and use
-concurrent subagents/session compaction for long-horizon work. For a single
-very-long-context job, 512K/1M via YaRN is validated on SGLang — see the tuning
-battery which will lock the best ctx (262K vs 512K vs 1M) on the numbers.
+**Practical rule (locked 2026-10-14):** run **262K native at max-running-requests 4**.
+On 2× GX10 the measured optimum is c=4 (~117 tok/s agg, 29.3 tok/s stream); above 4
+extra requests merely queue (no throughput gain) and sit closer to the spec-decode
+stability edge. For long-horizon work use concurrent subagents/session compaction.
+**1M is NOT the default.** 1M is *supported* via YaRN ×4 but on this cluster it
+clamps concurrency (~4-10), slows prefill, and has a demonstrated single-request
+memory wall (~294-390K) that can wedge the node (MiaAI-Lab #11). Keep 262K native
+for serving; only run 1M behind a separate served name/env gate if a real >262K
+single-request workload appears.
 
 ---
 
@@ -93,9 +98,9 @@ Serving parameters for the 180B (6B active) MoE at 262K ctx on 2× GB10, TP=2 (S
 
 | Config | max-running-requests | chunked-prefill | mem-fraction | KV dtype | Spec (NEXTN) |
 |---|---|---|---|---|---|
-| baseline | 36 | 4096 | 0.80 | fp8_e4m3 | 3 |
+| **locked** | **4** | 4096 | 0.80 | fp8_e4m3 | 3 |
 
-- **`max-running-requests 36`** — PixelML-verified 2×-DGX-Spark value (MTP state limits the effective scheduler count).
+- **`max-running-requests 4`** — **measured optimum on this 2× GX10 (locked 2026-10-14).** c=4 = ~117 tok/s agg / 29.3 tok/s stream; c=6 and c=8 merely queue (no gain, worse latency) and sit closer to the spec-decode edge. Matches the DS4 convention (never >4 on 2× GX10).
 - **`chunked-prefill-size 4096`** — the PixelML/MiaAI measured sweet spot on GB10.
 - **`mem-fraction-static 0.80`** — PixelML-verified (keep ≤0.78 if you see NVRM-OOM).
 - **`kv-cache-dtype fp8_e4m3`** — 1.70× the cache tokens of bf16; SGLang handles the FP8 PLE + KV.
@@ -153,10 +158,15 @@ See `host-cpu-thermal/README.md` for install/apply/verify/revert.
 These are the traps that break a fresh launch or reboot. Documented so a rebuild
 works first try.
 
-### 1. Worker-first (rank 1 before rank 0)
-The head (`rank 0`) owns the TCPStore rendezvous port. Launching the worker first
-avoids the Gloo "Connection reset by peer" init race. `sglang/scripts/sglang-qwen38.sh 1`
-(worker) then `sglang/scripts/sglang-qwen38.sh 0` (head), each with `--tp 2 --nnodes 2`.
+### 1. Head-first (rank 0 before rank 1)
+The head (`rank 0`) owns the TCPStore rendezvous port `--dist-init-addr`. Launching
+the head first lets it bind that port; the worker (`rank 1`) then joins ~25s later
+and clears `Init torch distributed begin`. Launching the worker first deadlocks it
+at `Init torch distributed begin` (it blocks on rank 0's port which isn't bound yet).
+`sglang/scripts/sglang-qwen38.sh 0` (head) then `sglang/scripts/sglang-qwen38.sh 1`
+(worker), each with `--tp 2 --nnodes 2`, ~25s apart. With `--weight-loader-disable-mmap`
+each rank frees its shards as it reads them, so head+worker loading together does NOT
+deadlock the unified pool.
 
 ### 2. podman, rootless
 This lane uses **podman** (rootless, `sudo -u wfoster`), not docker. All `docker run`
@@ -249,10 +259,31 @@ WantedBy=multi-user.target
    interface, podman, HF token.
 3. Apply `host-cpu-thermal/` and the `mods/busy-loop-fix/` (both idempotent).
 4. Ensure the SGLang image is pulled and the SM121 patches are staged, then
-   launch worker then head:
+   launch head then worker (~25s apart):
    ```bash
-   ./sglang/scripts/sglang-qwen38.sh 1   # on the worker (rank 1) — FIRST
-   ./sglang/scripts/sglang-qwen38.sh 0   # on the head (rank 0)
+   ./sglang/scripts/sglang-qwen38.sh 0   # on the head (rank 0) — TCPStore master — FIRST
+   ./sglang/scripts/sglang-qwen38.sh 1   # on the worker (rank 1) — joins ~25s later
    ```
 5. Wait for `/health` → 200, then sanity-check tool calling + vision, and verify
    thermals (`nvidia-smi` + `cat /sys/class/thermal/thermal_zone*/temp`).
+
+## Client / consumer config
+
+Set the client's `contextWindow` / `max_model_len` to **262144** (native), NOT
+1M. The server serves 262K native; a 1M client context will error or truncate on
+long requests.
+
+```yaml
+  - id: dgx_hobo_default
+    name: Qwen-3.8-Flash-Next (remote SGLang)
+    input: [text, image]
+    reasoning: true
+    contextWindow: 262144      # native context; do NOT set 1M
+    maxTokens: 131072
+```
+
+The SGLang API is bearer-gated: send `Authorization: Bearer <key>` (the lane's
+`.sglang-api-key`). A client must set `authHeader: true`. The upstream vLLM /
+SGLang endpoint is `http://<head-mgmt-ip>:8000/v1`; if routed via a proxy (e.g.
+liteLLM on `:4000`), point `baseUrl` at the proxy and set the served model id to
+`qwen3.8-flash-next-uncensored`.
