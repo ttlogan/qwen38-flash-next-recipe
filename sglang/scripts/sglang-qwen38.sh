@@ -13,7 +13,7 @@ HEAD_IP="${HEAD_IP:-192.168.177.11}"; WORKER_IP="${WORKER_IP:-192.168.177.12}"
 DIST_PORT="${DIST_PORT:-29522}"
 API_PORT="${API_PORT:-8000}"
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
-MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-6}"
+MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-4}"
 MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.80}"
 NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-enp1s0f0np0}"
 NCCL_IB_HCA="${NCCL_IB_HCA:-rocep1s0f0}"
@@ -63,7 +63,6 @@ sudo -u wfoster podman run --detach \
   --env NCCL_CUMEM_ENABLE=0 --env NCCL_NVLS_ENABLE=0 \
   --env NCCL_IGNORE_CPU_AFFINITY=1 \
   --env NCCL_DEBUG=WARN \
-  --env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   --env TORCH_NCCL_DUMP_ON_TIMEOUT=1 --env TORCH_NCCL_ENABLE_MONITORING=1 \
   --env TORCHINDUCTOR_CACHE_DIR=/cache/torch --env TRITON_CACHE_DIR=/cache/triton \
   --mount type=bind,src="$MODEL_DIR",dst=/models/qwen38-flash-next,readonly \
@@ -89,8 +88,6 @@ sudo -u wfoster podman run --detach \
     --mamba-ssm-dtype bfloat16 --mamba-scheduler-strategy extra_buffer --mamba-track-interval 64 \
     --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
     --chunked-prefill-size 4096 \
-    --disable-flashinfer-autotune \
-    --cuda-graph-max-bs 8 --disable-cuda-graph-padding \
     --max-running-requests \"$MAX_RUNNING_REQUESTS\" \
     --context-length \"$CONTEXT_LENGTH\" \
     --mem-fraction-static \"$MEM_FRACTION_STATIC\" \
