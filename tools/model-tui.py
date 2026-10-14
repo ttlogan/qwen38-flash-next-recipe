@@ -94,6 +94,7 @@ class ActionScreen(ModalScreen[str | None]):
             yield Label(f"  {self.model_label}", id="confirm-msg")
             yield Label("  (↑/↓ select, Enter choose, Esc cancel)", id="confirm-sub")
             yield ListView(*[ListItem(Label(a), id=a) for a in self.actions + ["cancel"]], id="action-list")
+        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#action-list", ListView).focus()
@@ -123,6 +124,7 @@ class ConfirmScreen(ModalScreen[bool]):
                 ListItem(Label("Yes"), id="yes"),
                 id="action-list",
             )
+        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#action-list", ListView).focus()
@@ -157,6 +159,7 @@ class ProgressScreen(ModalScreen[None]):
             yield Label(self.heading, id="progress-msg")
             with Vertical(id="log-pane"):
                 yield Log(id="log")
+        yield Footer()
 
     def action_toggle_log(self) -> None:
         self._log_on = not self._log_on
