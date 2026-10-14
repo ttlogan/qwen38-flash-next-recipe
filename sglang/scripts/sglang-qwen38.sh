@@ -45,7 +45,7 @@ chmod 600 "$SECRET_FILE"
 # ---- podman cleanup + run ----
 sudo -u wfoster podman rm -f "$NAME" 2>/dev/null || true
 sudo -u wfoster podman run --detach \
-  --name "$NAME" --restart unless-stopped \
+  --name "$NAME" --replace --restart unless-stopped \
   --network host --ipc host --device nvidia.com/gpu=all \
   --ulimit memlock=-1:-1 --cap-add IPC_LOCK \
   --device /dev/infiniband \
