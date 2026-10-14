@@ -41,10 +41,24 @@ def run(args: list[str], timeout: int = 1200, capture: bool = True) -> subproces
     return subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout, check=False)
 
 
+STATE_FILE = "/etc/vllm/current_model"
+
+
 def active_model() -> str | None:
-    """Ask swap-model.sh --health for current_model. Returns the lane key or None."""
+    """Return the currently-deployed model lane key.
+
+    Reads `/etc/vllm/current_model` (the same file `swap-model.sh` uses for the
+    default = last-used model) directly, no subprocess. Falls back to a `--health`
+    probe only if the file is unreadable. The file is what the boot ensure path
+    guarantees is serving, so it is authoritative for "active".
+    """
     try:
-        p = run(["--health"], timeout=20)
+        with open(STATE_FILE) as fh:
+            return fh.read().strip() or None
+    except OSError:
+        pass
+    try:
+        p = run(["--health"], timeout=10)
         for line in p.stdout.splitlines():
             if line.startswith("current_model:"):
                 return line.split(":", 1)[1].strip()
@@ -185,8 +199,12 @@ class ModelTui(App):
         return ListItem(Label(f"{marker}  {name}{active_tag}  —  {desc}"), id=key)
 
     def on_mount(self) -> None:
-        self.active = active_model()
-        self.refresh_list()
+        try:
+            self.active = active_model()
+        except Exception:
+            self.active = None
+        # Always populate the list even if the active-model probe fails/hangs.
+        self._rebuild_list()
         self.query_one("#models", ListView).focus()
 
     def refresh_list(self) -> None:
