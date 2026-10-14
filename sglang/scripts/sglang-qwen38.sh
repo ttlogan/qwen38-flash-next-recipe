@@ -86,7 +86,7 @@ sudo -u wfoster podman run --detach \
     --quantization modelopt_fp4 --fp4-gemm-backend flashinfer_cutlass \
     --page-size 64 \
     --linear-attn-prefill-backend triton --linear-attn-decode-backend flashinfer \
-    --mamba-ssm-dtype bfloat16 --mamba-radix-cache-strategy no_buffer --mamba-track-interval 64 \
+    --mamba-ssm-dtype bfloat16 --mamba-scheduler-strategy extra_buffer --mamba-track-interval 64 \
     --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
     --chunked-prefill-size 4096 \
     --disable-flashinfer-autotune \
