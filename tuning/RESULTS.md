@@ -83,7 +83,37 @@ Prefill throughput (realistic varied text, max_tokens=8), additive:
 aggregate ~153 tok/s at c=6. This matches the published NVFP4 TP=2 reference
 (~40-63 single, ~150 agg).
 
-## Locked-in default (promote to README.md once stable)
+### Run 2026-10-14 — POST-FIX (config: qwen3.8-flash-next-uncensored, 262K native, mem 0.80, max-running-requests **4**, head-first launch)
 
-_Pending the post-fix re-benchmark._ Target: stable through c=6 (was crashing at c=8
-pre-fix), ~44 tok/s single, ~153 tok/s agg at c=6, prefill ~2900 tok/s.
+Decode ladder (short prompt, max_tokens=320):
+| c | agg tok/s | per-stream tok/s | wall_s | err | note |
+|---|---|---|---|---|---|
+| 1 | 40.3 | 40.3 | 7.72 | 0 | single-stream |
+| 2 | 67.1 | 33.5 | 9.20 | 0 | |
+| **4** | **117.3** | **29.3** | 10.01 | 0 | **default (optimum)** |
+| 6 | 106.4 | 17.7 | 16.96 | 0 | queued; no gain |
+| 8 | 120.5 | 15.1 | 20.45 | 0 | **no longer crashes** |
+
+Prefill (realistic varied text, max_tokens=8):
+| requested | prompt_tok | dt (s) | prefill tok/s |
+|---|---|---|---|
+| 50000 | 25779 | 8.66 | 2976.7 |
+| 100000 | 51536 | 17.55 | 2936.7 |
+
+**Prefill ~2900-3000 tok/s** (flat across context). Decode single ~40 tok/s, aggregate ~117 tok/s at c=4.
+
+**Key findings:**
+- **c=4 is the throughput optimum AND the stability point.** c=6 and c=8 with
+  `max-running-requests=4` merely **queue** (no throughput gain; c=8 still works
+  because extra requests wait rather than overwhelm the scheduler). There is no
+  reason to go above 4 → matches the DS4 convention (never >4 on 2x GX10).
+- **c=8 no longer crashes** (was watchdog-killed pre-fix). The combination of
+  the c=4 cap + head-first rendezvous cleared the concurrent-decode crash.
+- **Head-first launch** (rank 0 = TCPStore master, rank 1 joins ~25s later) is
+  the deterministic, reproducible order. The old slave-first order intermittently
+  deadlocked at `Init torch distributed begin` (rank 1 blocks on rank 0's port).
+
+## Locked-in default (promoted)
+
+**`--max-running-requests 4`, context 262K native, mem 0.80, head-first launch.**
+Stable through c=8, ~40 tok/s single, ~117 tok/s agg at c=4, prefill ~2900 tok/s.

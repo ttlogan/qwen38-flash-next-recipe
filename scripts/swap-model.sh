@@ -12,8 +12,8 @@ set -euo pipefail
 STATE=/etc/vllm/current_model
 # Management/LAN reachability for the swap ssh. These are only used to reach the
 # peer for the podman rm (the container launch itself uses the RoCE CX7 fabric).
-LEO="<HEAD_IP>"
-RAPH="<WORKER_IP>"
+LEO="192.168.0.226"
+RAPH="192.168.0.143"
 
 # ---- lane launcher dispatch (handles worker-first where required) ----
 launch_lane() {
@@ -22,21 +22,17 @@ launch_lane() {
     deepseek) sudo -u wfoster "$LAUNCHER" ;;
     glm)      sudo -u wfoster bash /home/wfoster/glm53-vllm.sh 0 ;;
     qwen38)
-      # Qwen is served by SGLang (tp2, 2-node). WORKER (rank 1, raph) must come
-      # up FIRST, then head (rank 0). HEAD-first hits the TCPStore rendezvous race.
-      # With --weight-loader-disable-mmap both ranks eagerly read the 126 GB shards
-      # into RAM, so worker+head loading simultaneously deadlocks the unified pool.
-      # Launch worker, WAIT for it to finish loading, then launch head.
+      # Qwen is served by SGLang (tp2, 2-node). HEAD (rank 0, leo) must come up
+      # FIRST as the TCPStore master, then the worker (rank 1, raph) joins after
+      # a short delay. RANK-1-first deadlocks the worker at `Init torch
+      # distributed begin` (it blocks on rank 0's dist_init port not yet bound).
+      # With --weight-loader-disable-mmap each rank frees its shards as it reads
+      # them, so head+worker loading together does NOT deadlock the unified pool.
+      sudo -u wfoster bash /home/wfoster/sglang-qwen38.sh 0
+      echo "   head (rank 0) launched; waiting 25s for TCPStore bind, then worker"
+      sleep 25
       sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
         "bash /home/wfoster/sglang-qwen38.sh 1" 2>/dev/null || true
-      for i in $(seq 1 60); do
-        if sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
-          "sudo -u wfoster podman logs qwen38fn-sglang 2>&1 | grep -qa 'Load weight end'" 2>/dev/null; then
-          echo "   worker loaded after ~$((i*6))s"; break
-        fi
-        sleep 6
-      done
-      sudo -u wfoster bash /home/wfoster/sglang-qwen38.sh 0
       ;;
   esac
 }
