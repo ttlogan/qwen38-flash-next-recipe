@@ -29,7 +29,14 @@ def main() -> None:
     # across cold mmap page-fault -> rank-0 stall). Inject single-thread load.
     _loader_extra = json.dumps({"enable_multithread_load": False})
     server_args = prepare_server_args(
-        [*sys.argv[1:], "--model-loader-extra-config", _loader_extra, "--api-key", api_key]
+        [
+            *sys.argv[1:],
+            "--model-loader-extra-config",
+            _loader_extra,
+            "--weight-loader-disable-mmap",
+            "--api-key",
+            api_key,
+        ]
     )
 
     try:
