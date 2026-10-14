@@ -15,7 +15,21 @@ STATE=/etc/vllm/current_model
 LEO="<HEAD_IP>"
 RAPH="<WORKER_IP>"
 
-# ---- lane table: container + launcher + model dir ----
+# ---- lane launcher dispatch (handles worker-first where required) ----
+launch_lane() {
+  local m="$1"
+  case "$m" in
+    deepseek) sudo -u wfoster "$LAUNCHER" ;;
+    glm)      sudo -u wfoster bash /home/wfoster/glm53-vllm.sh 0 ;;
+    qwen38)
+      # Qwen is a direct-podman lane: WORKER (rank 1, raph) must come up FIRST,
+      # then head (rank 0). HEAD-first hits the TCPStore rendezvous race.
+      sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
+        "bash /home/wfoster/qwen38-vllm.sh 1" 2>/dev/null || true
+      sudo -u wfoster bash /home/wfoster/qwen38-vllm.sh 0
+      ;;
+  esac
+}
 # Each lane is its own bake. Swap logic lives here; lane specifics live in the
 # lane's launcher/script. The DeepSeek lane uses the b12x recipe stack (run-recipe.py).
 case "${2:-${CURRENT_MODEL:-deepseek}}" in
@@ -54,13 +68,33 @@ write_motd() {
 EOF
 }
 
-model_serving() { curl -fsS http://127.0.0.1:8000/v1/models 2>/dev/null | grep -qi "$1"; }
+# Map a lane key (deepseek/glm/qwen38) to the served-model-name it exposes on
+# /v1/models, so model_serving() can detect "already up" idempotently. Without
+# this, the boot/ensure path greps for e.g. "qwen38" but the server exposes
+# "qwen3.8-flash-next-uncensored" -> false negative -> relaunch every boot.
+served_name() {
+  case "$1" in
+    qwen38)           echo "qwen3.8-flash-next-uncensored" ;;
+    glm)              echo "glm" ;;
+    deepseek)         echo "deepseek" ;;
+    *)                echo "$1" ;;
+  esac
+}
+model_serving() {
+  local want; want=$(served_name "$1")
+  curl -fsS http://127.0.0.1:8000/v1/models 2>/dev/null | grep -qi "$want"
+}
 
 stop_stack() {
-  echo "==> stopping $CONTAINER on head + worker"
-  sudo -u wfoster podman rm -f "$CONTAINER" 2>/dev/null || true
-  sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
-    "podman rm -f $CONTAINER 2>/dev/null || true" 2>/dev/null || true
+  # Stop ALL known lane containers (not just CONTAINER), because the currently
+  # serving lane may differ from the target on a swap. Leaving an orphaned
+  # container running on :8000 is a regression (swap X->Y->X double-binds).
+  echo "==> stopping all lane containers on head + worker (deepseek/glm/qwen)"
+  for c in b12x-vllm-node vllm_glm53 vllm_qwen38; do
+    sudo -u wfoster podman rm -f "$c" 2>/dev/null || true
+    sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
+      "podman rm -f $c 2>/dev/null || true" 2>/dev/null || true
+  done
   echo "==> waiting for :8000 to free (bounded 60s)"
   for i in $(seq 1 30); do
     ! sudo ss -ltn 2>/dev/null | grep -q ":8000 " && { echo "   :8000 free"; return 0; }
@@ -84,8 +118,8 @@ case "${1:-}" in
     TARGET="${2:?usage: --swap <deepseek|glm|qwen38>}"
     stop_stack
     write_state "$TARGET"
-    # LAUNCHER already picks the lane (rank 0). Worker-first handled by the lane launcher.
-    eval "$LAUNCHER"
+    # launch_lane dispatches to the right launcher, worker-first where required.
+    launch_lane "$TARGET"
     for i in $(seq 1 60); do
       sleep 10
       c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health 2>/dev/null) || c=000
@@ -103,12 +137,7 @@ case "${1:-}" in
     else
       log "ensuring model '$CUR' (from $STATE)"
       stop_stack
-      # dispatch to the lane's launcher
-      case "$CUR" in
-        qwen38) sudo -u wfoster bash /home/wfoster/qwen38-vllm.sh 0 ;;
-        glm)    sudo -u wfoster bash /home/wfoster/glm53-vllm.sh 0 ;;
-        deepseek) sudo -u wfoster "$LAUNCHER" ;;
-      esac
+      launch_lane "$CUR"
     fi
     write_motd "$CUR"
     ;;
