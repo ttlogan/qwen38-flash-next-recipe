@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # swap-model.sh — bring up the last-used model on boot, or --swap to another.
-# Reuses the vetted 2-node orchestration (worker-first/head-first, idempotent
+# Reuses the vetted 2-node orchestration (head-first for SGLang Qwen, idempotent
 # ensure, health poll, bounded port-free wait, RoCE pinning) and just points to
 # the right container + launcher per lane.
 #
 # Call: swap-model.sh            # ensure current_model is serving (idempotent) + motd
 #       swap-model.sh --health   # report serving status / health
 #       swap-model.sh --swap <deepseek|glm|qwen38>  # stop current, launch <m>, update motd
+#       swap-model.sh --stop     # cleanly stop ALL lanes + free :8000 (default = last persists)
+#       swap-model.sh restart    # clean stop all lanes, relaunch the default (last-used) model
 set -euo pipefail
 
 STATE=/etc/vllm/current_model
@@ -149,6 +151,31 @@ case "${1:-}" in
       sleep 10
       c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health 2>/dev/null) || c=000
       [ "$c" = "200" ] && { log "READY after ~$((i*10))s ($TARGET)"; write_motd "$TARGET"; exit 0; }
+      [ $((i % 6)) -eq 0 ] && log "  still loading ($((i*10))s)..."
+    done
+    log "TIMEOUT. Check: podman logs $CONTAINER"
+    exit 1
+    ;;
+  --stop)
+    # Cleanly stop the currently-serving lane on BOTH nodes and free :8000.
+    # Leaves current_model (the default) intact so boot will bring it back up.
+    log "stopping all lane containers..."
+    stop_stack
+    write_motd "stopped"
+    log "model stopped. :8000 free. (boot will re-bring default: $(read_state))"
+    exit 0
+    ;;
+  restart|--restart)
+    # Clean stop ALL lanes, then relaunch the last-used model (default = last).
+    # Equivalent to --swap <current> but self-targeting the boot default.
+    CUR=$(read_state)
+    log "restarting default model '$CUR' (clean stop + relaunch)"
+    stop_stack
+    launch_lane "$CUR"
+    for i in $(seq 1 60); do
+      sleep 10
+      c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health 2>/dev/null) || c=000
+      [ "$c" = "200" ] && { log "READY after ~$((i*10))s ($CUR)"; write_motd "$CUR"; exit 0; }
       [ $((i % 6)) -eq 0 ] && log "  still loading ($((i*10))s)..."
     done
     log "TIMEOUT. Check: podman logs $CONTAINER"
