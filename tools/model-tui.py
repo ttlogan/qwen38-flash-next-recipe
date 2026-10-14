@@ -199,6 +199,7 @@ class ModelTui(App):
         super().__init__()
         self.active: str | None = None
         self.selected: str = MODELS[0][0]
+        self._suppress_next_select = False
 
     def action_quit(self) -> None:
         self.exit()
@@ -244,6 +245,9 @@ class ModelTui(App):
         # Only open the action menu when no modal is on top (the main list is the
         # active screen). A trailing keypress after a modal dismisses can bubble
         # here; ignore it so we never re-open a menu for a stale selection.
+        if self._suppress_next_select:
+            self._suppress_next_select = False
+            return
         if isinstance(self.screen, (ActionScreen, ConfirmScreen, ProgressScreen)):
             return
         key = event.item.id  # type: ignore[attr-defined]
@@ -261,6 +265,9 @@ class ModelTui(App):
 
     def _on_action_chosen(self, choice: str | None) -> None:
         if not choice or choice == "cancel":
+            # Swallow the trailing Enter that bubbles to the main list after the
+            # menu dismisses; otherwise it re-opens the menu immediately.
+            self._suppress_next_select = True
             return
         key = self.selected
         msg = {
@@ -273,6 +280,9 @@ class ModelTui(App):
 
     def _on_action_confirmed(self, confirmed: bool, key: str, choice: str) -> None:
         if not confirmed:
+            # Swallow the trailing Enter that bubbles to the main list after the
+            # confirm dismisses; otherwise it re-opens the action menu.
+            self._suppress_next_select = True
             return
         args = {"switch": ["--swap", key], "restart": ["restart"], "stop": ["--stop"]}[choice]
         self._run_action(args, f"{choice.capitalize()} {key}...")
