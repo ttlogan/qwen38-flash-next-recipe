@@ -1,0 +1,10 @@
+[Unit]
+Description=Set CPU governor to schedutil and cap performance cores to 2.8GHz (GB10 thermal relief)
+After=multi-user.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/cpupower frequency-set -g schedutil
+ExecStart=/usr/local/sbin/gx10-cpu-cap.sh
+[Install]
+WantedBy=multi-user.target

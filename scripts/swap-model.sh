@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# swap-model.sh — bring up the last-used model on boot, or --swap to another.
+# Reuses the vetted 2-node orchestration (worker-first/head-first, idempotent
+# ensure, health poll, bounded port-free wait, RoCE pinning) and just points to
+# the right container + launcher per lane.
+#
+# Call: swap-model.sh            # ensure current_model is serving (idempotent) + motd
+#       swap-model.sh --health   # report serving status / health
+#       swap-model.sh --swap <deepseek|glm|qwen38>  # stop current, launch <m>, update motd
+set -euo pipefail
+
+STATE=/etc/vllm/current_model
+# Management/LAN reachability for the swap ssh. These are only used to reach the
+# peer for the podman rm (the container launch itself uses the RoCE CX7 fabric).
+LEO="<HEAD_IP>"
+RAPH="<WORKER_IP>"
+
+# ---- lane table: container + launcher + model dir ----
+# Each lane is its own bake. Swap logic lives here; lane specifics live in the
+# lane's launcher/script. The DeepSeek lane uses the b12x recipe stack (run-recipe.py).
+case "${2:-${CURRENT_MODEL:-deepseek}}" in
+  deepseek)
+    CONTAINER=b12x-vllm-node
+    LAUNCHER="sudo -u wfoster /opt/vllm-recipe/.build/spark-vllm-docker/run-recipe.py /opt/vllm-recipe/recipes/orcarouter-eugr-1m.yaml -d"
+    MODEL_DIR=/models/orcarouter-deepseek-v4-flash-vision-uncensored
+    ;;
+  glm)
+    CONTAINER=vllm_glm53
+    LAUNCHER="sudo -u wfoster bash /home/wfoster/glm53-vllm.sh 0"
+    MODEL_DIR=/models/glm-5.3-flash-nvfp4
+    ;;
+  qwen38)
+    CONTAINER=vllm_qwen38
+    LAUNCHER="sudo -u wfoster bash /home/wfoster/qwen38-vllm.sh 0"
+    MODEL_DIR=/models/orcarouter-qwen3.8-flash-next-uncensored-nvfp4
+    ;;
+  *) echo "unknown model '${2:-}' (use deepseek|glm|qwen38)" >&2; exit 2 ;;
+esac
+
+log() { echo "[swap-model] $*"; }
+
+write_state() { echo "$1" | sudo tee "$STATE" >/dev/null; }
+read_state() { [ -f "$STATE" ] && cat "$STATE" || echo deepseek; }
+
+write_motd() {
+  local m="$1"
+  sudo tee /etc/motd >/dev/null <<EOF
+
+  GX10 2-node cluster -- HEAD node (rank 0 / front door)
+
+  LIVE MODEL: $m
+    operate: swap-model.sh [--health] [--swap <deepseek|glm|qwen38>]
+
+EOF
+}
+
+model_serving() { curl -fsS http://127.0.0.1:8000/v1/models 2>/dev/null | grep -qi "$1"; }
+
+stop_stack() {
+  echo "==> stopping $CONTAINER on head + worker"
+  sudo -u wfoster podman rm -f "$CONTAINER" 2>/dev/null || true
+  sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
+    "podman rm -f $CONTAINER 2>/dev/null || true" 2>/dev/null || true
+  echo "==> waiting for :8000 to free (bounded 60s)"
+  for i in $(seq 1 30); do
+    ! sudo ss -ltn 2>/dev/null | grep -q ":8000 " && { echo "   :8000 free"; return 0; }
+    sleep 2
+    [ $((i % 6)) -eq 0 ] && echo "   still waiting ($((i*2))s)..."
+  done
+  sudo ss -ltn 2>/dev/null | grep -q ":8000 " && { echo ":8000 still busy" >&2; exit 1; }
+}
+
+case "${1:-}" in
+  --health)
+    if curl -fsS http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then
+      echo "serving: $(curl -s http://127.0.0.1:8000/v1/models | tr -d '\n')"
+      echo "current_model: $(read_state)"
+    else
+      echo "NOT serving on :8000"
+    fi
+    exit 0
+    ;;
+  --swap)
+    TARGET="${2:?usage: --swap <deepseek|glm|qwen38>}"
+    stop_stack
+    write_state "$TARGET"
+    # LAUNCHER already picks the lane (rank 0). Worker-first handled by the lane launcher.
+    eval "$LAUNCHER"
+    for i in $(seq 1 60); do
+      sleep 10
+      c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health 2>/dev/null) || c=000
+      [ "$c" = "200" ] && { log "READY after ~$((i*10))s ($TARGET)"; write_motd "$TARGET"; exit 0; }
+      [ $((i % 6)) -eq 0 ] && log "  still loading ($((i*10))s)..."
+    done
+    log "TIMEOUT. Check: podman logs $CONTAINER"
+    exit 1
+    ;;
+  "")
+    # Boot / ensure path: read last-used model, ensure it's serving.
+    CUR=$(read_state)
+    if model_serving "$CUR"; then
+      log "model '$CUR' already serving. Updating motd only."
+    else
+      log "ensuring model '$CUR' (from $STATE)"
+      stop_stack
+      # dispatch to the lane's launcher
+      case "$CUR" in
+        qwen38) sudo -u wfoster bash /home/wfoster/qwen38-vllm.sh 0 ;;
+        glm)    sudo -u wfoster bash /home/wfoster/glm53-vllm.sh 0 ;;
+        deepseek) sudo -u wfoster "$LAUNCHER" ;;
+      esac
+    fi
+    write_motd "$CUR"
+    ;;
+  *) echo "unknown arg '${1:-}'" >&2; exit 2 ;;
+esac
