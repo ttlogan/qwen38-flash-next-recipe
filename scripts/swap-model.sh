@@ -17,12 +17,29 @@ STATE=/etc/vllm/current_model
 LEO="192.168.0.226"
 RAPH="192.168.0.143"
 
-# ---- lane launcher dispatch (handles worker-first where required) ----
+# ---- lane launcher dispatch (queue order per lane: GLM/deepseek worker-first;
+#       SGLang Qwen head-first) ----
 launch_lane() {
   local m="$1"
   case "$m" in
     deepseek) sudo -u wfoster "$LAUNCHER" ;;
-    glm)      sudo -u wfoster bash /home/wfoster/glm53-vllm.sh 0 ;;
+    glm)
+      # GLM is served by vLLM (tp2, 2-node, distributed-executor-backend mp).
+      # The launcher (glm53-vllm.sh) is rank-aware ($1 = 0|1) and uses
+      # --nnodes 2 --master-addr 192.168.177.11:29521. The mp rendezvous needs
+      # BOTH ranks up, but swap-model.sh previously launched ONLY rank 0 so the
+      # 2-node job never joined (rendezvous blocked -> /health never 200). The
+      # launcher's own comment says rank 1 (worker) FIRST, then rank 0 (head) -
+      # the opposite of the SGLang Qwen lane (head-first). Launch the worker on
+      # raph first, then the head on leo. No port wait here: rank 0 (head) binds
+      # :29521 itself; a wait would be circular.
+      echo "   launching worker (rank 1) on raph... (worker-first, per vLLM mp)"
+      sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
+        "bash /home/wfoster/glm53-vllm.sh 1" 2>/dev/null || true
+      sleep 3
+      echo "   head (rank 0) launched on leo..."
+      sudo -u wfoster bash /home/wfoster/glm53-vllm.sh 0
+      ;;
     qwen38)
       # Qwen is served by SGLang (tp2, 2-node). HEAD (rank 0, leo) must come up
       # FIRST as the TCPStore master, then the worker (rank 1, raph) joins after

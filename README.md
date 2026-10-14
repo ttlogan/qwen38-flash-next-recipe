@@ -190,11 +190,14 @@ works first try.
 
 ### 1. Head-first (rank 0 before rank 1)
 The head (`rank 0`) owns the TCPStore rendezvous port `--dist-init-addr`. Launching
-the head first lets it bind that port; the worker (`rank 1`) then joins ~25s later
-and clears `Init torch distributed begin`. Launching the worker first deadlocks it
-at `Init torch distributed begin` (it blocks on rank 0's port which isn't bound yet).
+the head first lets it bind that port; the worker (`rank 1`) then joins once the
+port is bound and clears `Init torch distributed begin`. Launching the worker
+first deadlocks it at `Init torch distributed begin` (it blocks on rank 0's port
+which isn't bound yet).
 `sglang/scripts/sglang-qwen38.sh 0` (head) then `sglang/scripts/sglang-qwen38.sh 1`
-(worker), each with `--tp 2 --nnodes 2`, ~25s apart. With `--weight-loader-disable-mmap`
+(worker), each with `--tp 2 --nnodes 2`. `swap-model.sh launch_lane qwen38` does
+this automatically: it launches the head, then waits (bounded `:29522` TCPStore
+bind, not a fixed sleep) before ssh-ing the worker. With `--weight-loader-disable-mmap`
 each rank frees its shards as it reads them, so head+worker loading together does NOT
 deadlock the unified pool.
 
@@ -226,7 +229,7 @@ under an NVFP4 checkpoint.
   :8000 free wait), launches the target lane, updates `/etc/motd`.
 - Writes the accurate live model + ctx + stack into `/etc/motd`.
 
-**Boot timer** (systemd, oneshot):
+**Boot autostart** (systemd service `dgx-model.service`):
 ```ini
 [Unit]
 Description=Bring up the last-used model (via swap-model.sh) on the 2-node GX10 cluster
@@ -234,10 +237,12 @@ After=network.target systemd-user-sessions.service
 Wants=network.target
 
 [Service]
-Type=oneshot
+Type=simple
 ExecStartPre=/bin/sleep 30
 ExecStart=/usr/local/bin/swap-model.sh
 TimeoutStartSec=1200
+Restart=on-failure
+RestartSec=60
 User=root
 
 [Install]
@@ -254,7 +259,7 @@ WantedBy=multi-user.target
 | Engine dies past ~24K ctx | Missing top-k patch for the sparse-attention indexer | Install `sparse_attn_indexer_kpool.py` overlay (same as GLM lane) |
 | **Rank-0 head hangs during `load_weights`** (worker finishes `Load weight end`, head stuck at `qwen4_exp.py:2096` / MoE `copy_`, head host RAM 0 free + swapping, GPU 1%) | mmap loader accumulates the checkpoint's cold pages on top of the GPU-resident model, exhausting the GB10 unified pool; the H2D `copy_` page-fault stalls under the CUDA driver lock on the head only | Add `--weight-loader-disable-mmap` (load eagerly, free each shard). Inject via `launch_secure.py` argv — the `--model-loader-extra-config` JSON gets mangled by shell quoting. NOT NCCL, NOT `/dev/shm`, NOT loader threading, NOT extra flags (all ruled out with live tests) |
 | OOM on boot (NVFP4 + KV, bf16 PLE) | `mem-fraction-static` too high, or abliterated/NVFP4 bf16 PLE too big | Lower to 0.78-0.80; use the ModelOpt FP8-PLE repack (this repo) |
-| Head never reaches `/health` | Worker not launched first, or `:8000`/TCPStore race | Launch rank 1 before rank 0 |
+| Head never reaches `/health` | SGLang lane: worker launched before the head's `:29522` TCPStore bound; or a `:8000`/TCPStore race | Qwen/SGLang is **head-first**: launch rank 0 before rank 1 (or use `swap-model.sh`, which waits for the `:29522` bind). Note the vLLM GLM/DeepSeek lanes are worker-first — the order differs per lane |
 | `modelopt_fp4` refused / PLE not bound | Stock runtime can't bind the FP8 PLE under an NVFP4 checkpoint | Use the pinned SGLang image + `--quantization modelopt_fp4` (and the SM121 patches) |
 | CPU spinning, SoC hot | `busy_loop_s` not patched | Ensure `mods/busy-loop-fix` applied (idempotent) |
 
@@ -289,11 +294,14 @@ WantedBy=multi-user.target
    interface, podman, HF token.
 3. Apply `host-cpu-thermal/` and the `mods/busy-loop-fix/` (both idempotent).
 4. Ensure the SGLang image is pulled and the SM121 patches are staged, then
-   launch head then worker (~25s apart):
+   launch head then worker (head first; the worker joins once the TCPStore
+   `:29522` port is bound):
    ```bash
    ./sglang/scripts/sglang-qwen38.sh 0   # on the head (rank 0) — TCPStore master — FIRST
-   ./sglang/scripts/sglang-qwen38.sh 1   # on the worker (rank 1) — joins ~25s later
+   ./sglang/scripts/sglang-qwen38.sh 1   # on the worker (rank 1) — joins after :29522 binds
    ```
+   (Or just use `swap-model.sh` / `model-tui`, which handle the head-first launch
+   and the TCPStore bind wait automatically.)
 5. Wait for `/health` → 200, then sanity-check tool calling + vision, and verify
    thermals (`nvidia-smi` + `cat /sys/class/thermal/thermal_zone*/temp`).
 
@@ -304,7 +312,7 @@ Set the client's `contextWindow` / `max_model_len` to **262144** (native), NOT
 long requests.
 
 ```yaml
-  - id: dgx_hobo_default
+  - id: qwen3.8-flash-next-uncensored
     name: Qwen-3.8-Flash-Next (remote SGLang)
     input: [text, image]
     reasoning: true
