@@ -41,23 +41,14 @@ launch_lane() {
       sudo -u wfoster bash /home/wfoster/glm53-vllm.sh 0
       ;;
     qwen38)
-      # Qwen is served by SGLang (tp2, 2-node). HEAD (rank 0, leo) must come up
-      # FIRST as the TCPStore master, then the worker (rank 1, raph) joins after
-      # a short delay. RANK-1-first deadlocks the worker at `Init torch
-      # distributed begin` (it blocks on rank 0's dist_init port not yet bound).
-      # With --weight-loader-disable-mmap each rank frees its shards as it reads
-      # them, so head+worker loading together does NOT deadlock the unified pool.
-      sudo -u wfoster bash /home/wfoster/sglang-qwen38.sh 0
-      echo "   head (rank 0) launched; waiting for TCPStore :29522 to bind, then worker"
-      # Wait for the head's TCPStore (dist-init-addr) to actually bind before starting
-      # the worker, instead of a fixed sleep. A fixed 25s races a cold-boot where JIT/
-      # cache warmup delays the bind -> worker starts too early and the rendezvous fails.
-      for _ in $(seq 1 60); do
-        sudo ss -ltn 2>/dev/null | grep -q ":29522 " && break
-        sleep 1
-      done
-      sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
-        "bash /home/wfoster/sglang-qwen38.sh 1" 2>/dev/null || true
+      # Qwen is served by vLLM (MiaAI native stack, tp2/2-node via the runbook).
+      # The runbook's start.sh orchestrates head+worker itself (patch, launch,
+      # health); --launch skips download/sync (weights cached on both nodes).
+      # MODEL_ID / SERVED_MODEL_NAME / ABLIT come from the qwen model.conf +
+      # flags .env that the lane writes first. SERVED_MODEL_NAME stays
+      # qwen3.8-flash-next-uncensored so litellm/clients are unchanged.
+      sudo -u wfoster env SPARK_VLLM_MODEL_CONF=/home/wfoster/.config/spark-vllm/qwen-model.conf \
+        bash /home/wfoster/.local/bin/miaai_launch.sh
       ;;
   esac
 }
@@ -75,9 +66,9 @@ case "${2:-${CURRENT_MODEL:-deepseek}}" in
     MODEL_DIR=/models/glm-5.3-flash-nvfp4
     ;;
   qwen38)
-    CONTAINER=qwen38fn-sglang
-    LAUNCHER="sudo -u wfoster bash /home/wfoster/sglang-qwen38.sh 0"
-    MODEL_DIR=/models/orca-qwen3.8-modelopt-nvfp4
+    CONTAINER=vllm-fn
+    LAUNCHER="sudo -u wfoster env SPARK_VLLM_MODEL_CONF=/home/wfoster/.config/spark-vllm/qwen-model.conf bash /home/wfoster/.local/bin/miaai_launch.sh"
+    MODEL_DIR=/home/wfoster/.cache/huggingface/hub/models--drowzeys--keys-Qwen3.8-Flash-Next-NVFP4-dual-ablit-house-qsa-L3-47
     ;;
   *) echo "unknown model '${2:-}' (use deepseek|glm|qwen38)" >&2; exit 2 ;;
 esac
@@ -112,17 +103,11 @@ served_name() {
     *)                echo "$1" ;;
   esac
 }
-# Auth header for a lane's /v1/models probe. SGLang (qwen) is bearer-gated; the
-# vLLM lanes (deepseek/glm) answer open. Read the lane's key file if present,
-# else send no header. The deployed Qwen launcher reads the same
-# $REPO_ROOT/.sglang-api-key.
+# Auth header for a lane's /v1/models probe. All lanes now answer open on
+# :8000 (deepseek/glm vLLM, and qwen on the vLLM MiaAI stack). The old SGLang
+# qwen lane was bearer-gated; vLLM is not, so we send no header.
 lane_key() {
-  local f
-  case "$1" in
-    qwen38) f="${Qwen_KEY_FILE:-/home/wfoster/qwen38-flash-next-recipe/.sglang-api-key}" ;;
-    *)      return 0 ;;
-  esac
-  [ -r "$f" ] && { echo "Authorization: Bearer $(tr -d '\n' < "$f")"; }
+  return 0
 }
 model_serving() {
   local want; want=$(served_name "$1")
@@ -135,7 +120,7 @@ stop_stack() {
   # serving lane may differ from the target on a swap. Leaving an orphaned
   # container running on :8000 is a regression (swap X->Y->X double-binds).
   echo "==> stopping all lane containers on head + worker (deepseek/glm/qwen)"
-  for c in b12x-vllm-node vllm_glm53 qwen38fn-sglang; do
+  for c in b12x-vllm-node vllm_glm53 qwen38fn-sglang vllm-fn; do
     sudo -u wfoster podman rm -f "$c" 2>/dev/null || true
     sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
       "podman rm -f $c 2>/dev/null || true" 2>/dev/null || true
