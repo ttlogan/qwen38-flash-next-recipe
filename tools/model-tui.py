@@ -33,7 +33,7 @@ SWAP = "/usr/local/bin/swap-model.sh"
 MODELS = [
     ("deepseek", "DeepSeek-V4-Flash-Vision", "vLLM (b12x), 1M ctx, vision"),
     ("glm", "GLM-5.3-Flash", "vLLM, 1M ctx, vision"),
-    ("qwen38", "Qwen3.8-Flash-Next-Uncensored", "vLLM, 262K ctx"),
+    ("qwen38", "Qwen3.8-Flash-Next-Uncensored", "vLLM, 262K ctx, vision"),
 ]
 
 # lane_key -> rootless podman container name (for `podman logs`). Sync with swap-model.sh.
