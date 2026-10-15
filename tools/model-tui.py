@@ -33,18 +33,18 @@ SWAP = "/usr/local/bin/swap-model.sh"
 MODELS = [
     ("deepseek", "DeepSeek-V4-Flash-Vision", "vLLM (b12x), 1M ctx, vision"),
     ("glm", "GLM-5.3-Flash", "vLLM (dflash2), 1M ctx"),
-    ("qwen38", "Qwen3.8-Flash-Next-Uncensored", "SGLang (tp2), 262K ctx"),
+    ("qwen38", "Qwen3.8-Flash-Next-Uncensored", "vLLM (MiaAI), 262K ctx"),
 ]
 
 # lane_key -> rootless podman container name (for `podman logs`). Sync with swap-model.sh.
 CONTAINERS = {
     "deepseek": "b12x-vllm-node",
     "glm": "vllm_glm53",
-    "qwen38": "qwen38fn-sglang",
+    "qwen38": "vllm-fn",
 }
 
 
-def run(args: list[str], timeout: int = 1200, capture: bool = True) -> subprocess.CompletedProcess:
+def run(args: list[str], timeout: int = 1800, capture: bool = True) -> subprocess.CompletedProcess:
     """Run a swap-model.sh subcommand. `timeout` is large because swaps block on load."""
     cmd = [SWAP, *args]
     return subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout, check=False)
@@ -180,22 +180,40 @@ class ProgressScreen(ModalScreen[None]):
         proc = self._log_proc
         if proc is None or proc.stdout is None:
             return
-        log = self.query_one("#log", Log)
-        # Read the pipe on a worker thread so a stalled `podman logs -f` never
-        # blocks the event loop; the read is what yields, not us.
-        reader = proc.stdout
+        # Guard: the Log may already be unmounted if the screen was cancelled
+        # (Esc) before the tail started or while a line is in flight. Query it
+        # lazily inside the loop and bail if the widget is detached.
         loop = asyncio.get_running_loop()
         while True:
-            line = await loop.run_in_executor(None, reader.readline)
+            try:
+                line = await loop.run_in_executor(None, proc.stdout.readline)
+            except Exception:  # noqa: BLE001  (pipe closed on cancel)
+                break
             if not line:
                 break
-            log.write_line(line.rstrip())
-            if len(log._lines) > 300:  # type: ignore[attr-defined]
-                del log._lines[: len(log._lines) - 300]  # type: ignore[attr-defined]
+            try:
+                log = self.query_one("#log", Log)
+                log.write_line(line.rstrip())
+                if len(log._lines) > 300:  # type: ignore[attr-defined]
+                    del log._lines[: len(log._lines) - 300]  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001  (widget detached on cancel)
+                break
 
     def on_unmount(self) -> None:
+        # Cancel the log-pump task before killing the subprocess, otherwise the
+        # still-running _pump_log keeps calling write_line on this now-unmounted
+        # Log widget and throws LookupError 'active_app' (the exact crash when
+        # you Esc out of the spinner). A cancelled task's readline may return a
+        # partial/empty line, so guard for a closed/dead widget too.
+        if getattr(self, "_log_task", None):
+            self._log_task.cancel()
         if self._log_proc:
             self._log_proc.kill()
+            if self._log_proc.stdout:
+                try:
+                    self._log_proc.stdout.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def tick(self) -> None:
         pass
@@ -260,6 +278,11 @@ class ModelTui(App):
 
     def __init__(self):
         super().__init__()
+        # Default to a dark theme (Catppuccin Mocha) set in code so no theme
+        # switcher / command palette is needed — opening that palette is what
+        # wedged arrow navigation (it leaves focus on the palette input, so the
+        # up/down keys no longer reach the model list).
+        self.theme = "catppuccin-mocha"
         self.active: str | None = None
         self.selected: str = MODELS[0][0]
         self._suppress_next_select = False
@@ -284,7 +307,7 @@ class ModelTui(App):
     def _item(self, m: tuple[str, str, str]) -> ListItem:
         key, name, desc = m
         is_active = key == self.active
-        marker = "●" if is_active else "○"
+        marker = "[green]●[/green]" if is_active else "○"
         active_tag = "  [b]ACTIVE[/b]" if is_active else ""
         return ListItem(Label(f"{marker}  {name}{active_tag}  —  {desc}"), id=key)
 
@@ -297,12 +320,14 @@ class ModelTui(App):
                 lv.index = idx
         lv.focus()
 
-    def refresh_list(self) -> None:
+    async def refresh_list(self) -> None:
         # Rebuild via recompose() so the rows actually re-render after a swap.
-        self.recompose()
+        # recompose() is a coroutine; it must be awaited, else the list never
+        # rebuilds (and Textual warns "coroutine was never awaited").
+        await self.recompose()
 
-    def _rebuild_list(self) -> None:
-        self.refresh_list()
+    async def _rebuild_list(self) -> None:
+        await self.refresh_list()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         # Only open the action menu when no modal is on top (the main list is the
@@ -348,6 +373,11 @@ class ModelTui(App):
             self._suppress_next_select = True
             return
         args = {"switch": ["--swap", key], "restart": ["restart"], "stop": ["--stop"]}[choice]
+        # The SAME Enter that triggered the confirm 'Yes' dismiss also bubbles to
+        # the main list after the modal is gone. Swallow it so we don't instantly
+        # re-open an action menu for a stale selection (same class as the
+        # cancel/No latch below).
+        self._suppress_next_select = True
         self._run_action(args, f"{choice.capitalize()} {key}...", CONTAINERS.get(key))
 
     def _run_action(self, args: list[str], heading: str, container: str | None = None) -> None:
@@ -369,15 +399,16 @@ class ModelTui(App):
         except Exception as e:  # noqa: BLE001
             err = f"error: {e}"
         finally:
-            self._finish_action(proc, err, args)
+            await self._finish_action(proc, err, args)
 
-    def _finish_action(self, proc: subprocess.CompletedProcess | None, err: str | None, args: list[str]) -> None:
+    async def _finish_action(self, proc: subprocess.CompletedProcess | None, err: str | None, args: list[str]) -> None:
         # Guard: the user may have Esc'd the ProgressScreen (dismiss pops it)
         # while the subprocess was still running. If we pop again on top of the
-        # base screen, Textual raises ScreenStackError 'Can't pop screen'.
+        # base screen, Textual raises ScreenStackError 'Can't pop screen'. Only
+        # pop when the ProgressScreen is actually still on top.
         if isinstance(self.screen, ProgressScreen):
             self.pop_screen()
-        self._rebuild_list()
+        await self._rebuild_list()
         if err:
             status = "FAILED"
             tail = err
