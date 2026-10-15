@@ -32,7 +32,7 @@ SWAP = "/usr/local/bin/swap-model.sh"
 # lane_key -> (display name, description). Keep in sync with swap-model.sh.
 MODELS = [
     ("deepseek", "DeepSeek-V4-Flash-Vision", "vLLM (b12x), 1M ctx, vision"),
-    ("glm", "GLM-5.3-Flash", "vLLM (dflash2), 1M ctx"),
+    ("glm", "GLM-5.3-Flash", "vLLM, 1M ctx, vision"),
     ("qwen38", "Qwen3.8-Flash-Next-Uncensored", "vLLM, 262K ctx"),
 ]
 
