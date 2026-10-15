@@ -31,9 +31,9 @@ SWAP = "/usr/local/bin/swap-model.sh"
 
 # lane_key -> (display name, description). Keep in sync with swap-model.sh.
 MODELS = [
-    ("deepseek", "DeepSeek-V4-Flash-Vision", "vLLM (b12x), 1M ctx, vision"),
-    ("glm", "GLM-5.3-Flash", "vLLM, 1M ctx, vision"),
-    ("qwen38", "Qwen3.8-Flash-Next-Uncensored", "vLLM, 262K ctx, vision"),
+    ("deepseek", "DeepSeek-V4-Flash-Vision", "vLLM, b12x, 1M ctx"),
+    ("glm", "GLM-5.3-Flash", "vLLM, 1M ctx"),
+    ("qwen38", "Qwen3.8-Flash-Next-Uncensored", "vLLM, 262k ctx"),
 ]
 
 # lane_key -> rootless podman container name (for `podman logs`). Sync with swap-model.sh.
@@ -309,7 +309,7 @@ class ModelTui(App):
         is_active = key == self.active
         marker = "[green]●[/green]" if is_active else "○"
         active_tag = "  [b]ACTIVE[/b]" if is_active else ""
-        return ListItem(Label(f"{marker}  {name}{active_tag}  —  {desc}"), id=key)
+        return ListItem(Label(f"{marker}  {name}{active_tag}  ({desc})"), id=key)
 
     def on_mount(self) -> None:
         # Focus the list and pre-highlight the active model row.
