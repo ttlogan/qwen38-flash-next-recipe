@@ -372,7 +372,11 @@ class ModelTui(App):
             self._finish_action(proc, err, args)
 
     def _finish_action(self, proc: subprocess.CompletedProcess | None, err: str | None, args: list[str]) -> None:
-        self.pop_screen()
+        # Guard: the user may have Esc'd the ProgressScreen (dismiss pops it)
+        # while the subprocess was still running. If we pop again on top of the
+        # base screen, Textual raises ScreenStackError 'Can't pop screen'.
+        if isinstance(self.screen, ProgressScreen):
+            self.pop_screen()
         self._rebuild_list()
         if err:
             status = "FAILED"
