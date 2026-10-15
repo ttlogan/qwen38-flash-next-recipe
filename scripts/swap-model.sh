@@ -109,7 +109,7 @@ served_name() {
   case "$1" in
     qwen38)           echo "qwen3.8-flash-next-uncensored" ;;
     glm)              echo "dgx_hobo_default" ;;
-    deepseek)         echo "deepseek-v4-flash-vision-exp" ;;
+    deepseek)         echo "deepseek-v4-flash-vision" ;;
     *)                echo "$1" ;;
   esac
 }
