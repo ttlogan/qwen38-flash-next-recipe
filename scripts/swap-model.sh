@@ -47,8 +47,12 @@ launch_lane() {
       # MODEL_ID / SERVED_MODEL_NAME / ABLIT come from the qwen model.conf +
       # flags .env that the lane writes first. SERVED_MODEL_NAME stays
       # qwen3.8-flash-next-uncensored so litellm/clients are unchanged.
-      sudo -u wfoster env SPARK_VLLM_MODEL_CONF=/home/wfoster/.config/spark-vllm/qwen-model.conf \
-        bash /home/wfoster/.local/bin/miaai_launch.sh
+      # Detach (setsid nohup) because start.sh --launch blocks on its own
+      # UNBOUNDED /health loop, which would defeat the bounded readiness wait
+      # below (a capture hang would hang --swap forever). Backgrounding lets
+      # swap-model.sh's own 20-min poll own readiness.
+      setsid nohup sudo -u wfoster env SPARK_VLLM_MODEL_CONF=/home/wfoster/.config/spark-vllm/qwen-model.conf \
+        bash /home/wfoster/.local/bin/miaai_launch.sh >/home/wfoster/qwen38_launch.log 2>&1 < /dev/null &
       ;;
   esac
 }
