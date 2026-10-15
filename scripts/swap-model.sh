@@ -156,7 +156,10 @@ case "${1:-}" in
     write_state "$TARGET"
     # launch_lane dispatches to the right launcher, worker-first where required.
     launch_lane "$TARGET"
-    for i in $(seq 1 60); do
+    # Up to 20 min readiness wait. DeepSeek/b12x weight load + CUDA-graph
+    # capture can exceed 10 min, especially under concurrent disk IO (e.g. a
+    # model download on the same NVMe). 600s was too tight.
+    for i in $(seq 1 120); do
       sleep 10
       c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health 2>/dev/null) || c=000
       [ "$c" = "200" ] && { log "READY after ~$((i*10))s ($TARGET)"; write_motd "$TARGET"; exit 0; }
@@ -181,7 +184,8 @@ case "${1:-}" in
     log "restarting default model '$CUR' (clean stop + relaunch)"
     stop_stack
     launch_lane "$CUR"
-    for i in $(seq 1 60); do
+    # Up to 20 min readiness wait (same rationale as --swap).
+    for i in $(seq 1 120); do
       sleep 10
       c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health 2>/dev/null) || c=000
       [ "$c" = "200" ] && { log "READY after ~$((i*10))s ($CUR)"; write_motd "$CUR"; exit 0; }
