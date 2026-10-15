@@ -61,12 +61,13 @@ launch_lane() {
 case "${2:-${CURRENT_MODEL:-deepseek}}" in
   deepseek)
     CONTAINER=b12x-vllm-node
-    # Detach the b12x launch (nohup setsid) so the engine survives swap-model.sh
-    # exiting after the readiness wait / a model-tui process-timeout. run-recipe.py
-    # already background-drops per-node, but wrapping in setsid orphans the whole
-    # launch from the caller's process tree so a killed subprocess can't take it
-    # down (the "deepseek cleared but never relaunched" bug).
-    LAUNCHER="sudo -u wfoster setsid nohup /opt/vllm-recipe/.build/spark-vllm-docker/run-recipe.py /opt/vllm-recipe/recipes/orcarouter-eugr-1m.yaml -d >/home/wfoster/deepseek_launch.log 2>&1 < /dev/null &"
+    # run-recipe.py -d already daemonizes (renders per-node launch and drops them
+    # in the background), so it survives swap-model.sh / a model-tui subprocess
+    # kill. Do NOT wrap it in setsid/nohup + a shell redirect: run-recipe.py
+    # forwards its trailing args to `exec vllm serve`, so a redirect token
+    # (`>/log 2>&1 </dev/null`) leaks into the vllm argv and crashes the launch
+    # with `vllm: error: unrecognized arguments`. Plain invocation only.
+    LAUNCHER="sudo -u wfoster /opt/vllm-recipe/.build/spark-vllm-docker/run-recipe.py /opt/vllm-recipe/recipes/orcarouter-eugr-1m.yaml -d"
     MODEL_DIR=/models/orcarouter-deepseek-v4-flash-vision-uncensored
     ;;
   glm)
