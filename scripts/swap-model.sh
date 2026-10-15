@@ -26,19 +26,21 @@ launch_lane() {
     glm)
       # GLM is served by vLLM (tp2, 2-node, distributed-executor-backend mp).
       # The launcher (glm53-vllm.sh) is rank-aware ($1 = 0|1) and uses
-      # --nnodes 2 --master-addr 192.168.177.11:29521. The mp rendezvous needs
-      # BOTH ranks up, but swap-model.sh previously launched ONLY rank 0 so the
-      # 2-node job never joined (rendezvous blocked -> /health never 200). The
-      # launcher's own comment says rank 1 (worker) FIRST, then rank 0 (head) -
-      # the opposite of the SGLang Qwen lane (head-first). Launch the worker on
-      # raph first, then the head on leo. No port wait here: rank 0 (head) binds
-      # :29521 itself; a wait would be circular.
-      echo "   launching worker (rank 1) on raph... (worker-first, per vLLM mp)"
-      sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
-        "bash /home/wfoster/glm53-vllm.sh 1" 2>/dev/null || true
-      sleep 3
+      # --nnodes 2 --master-addr 192.168.177.11:29521. vLLM mp / 2-node ranks:
+      # rank 0 (head) owns the TCPStore on :29521, so HEAD-FIRST is required
+      # (worker-first hits a Gloo 'Connection reset by peer' NCCL init race).
+      # This matches launch-glm.sh (the vetted GLM launcher), which launches
+      # head first then WAITS for the :29521 TCPStore before the worker.
       echo "   head (rank 0) launched on leo..."
       sudo -u wfoster bash /home/wfoster/glm53-vllm.sh 0
+      echo "   waiting for head TCPStore :29521..."
+      for i in $(seq 1 30); do
+        sudo ss -ltn 2>/dev/null | grep -q ":29521 " && { echo "   TCPStore up"; break; }
+        sleep 2
+      done
+      echo "   launching worker (rank 1) on raph... (head-first, per vLLM mp TCPStore)"
+      sudo -u wfoster ssh -o BatchMode=yes -o ConnectTimeout=10 "$RAPH" \
+        "bash /home/wfoster/glm53-vllm.sh 1" 2>/dev/null || true
       ;;
     qwen38)
       # Qwen is served by vLLM (MiaAI native stack, tp2/2-node via the runbook).
