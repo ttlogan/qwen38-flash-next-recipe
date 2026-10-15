@@ -113,6 +113,16 @@ served_name() {
     *)                echo "$1" ;;
   esac
 }
+# Map a lane to the podman container it runs in (for TIMEOUT diagnostics on the
+# restart/boot paths, where $CONTAINER is not set by $2).
+lane_box() {
+  case "$1" in
+    qwen38)           echo "vllm-fn" ;;
+    glm)              echo "vllm_glm53" ;;
+    deepseek)         echo "b12x-vllm-node" ;;
+    *)                echo "$1" ;;
+  esac
+}
 # Auth header for a lane's /v1/models probe. All lanes now answer open on
 # :8000 (deepseek/glm vLLM, and qwen on the vLLM MiaAI stack). The old SGLang
 # qwen lane was bearer-gated; vLLM is not, so we send no header.
@@ -201,7 +211,7 @@ case "${1:-}" in
       [ "$c" = "200" ] && { log "READY after ~$((i*10))s ($CUR)"; write_motd "$CUR"; exit 0; }
       [ $((i % 6)) -eq 0 ] && log "  still loading ($((i*10))s)..."
     done
-    log "TIMEOUT. Check: podman logs $CONTAINER"
+    log "TIMEOUT. Check: podman logs $(lane_box "$CUR")"
     exit 1
     ;;
   "")
@@ -213,6 +223,15 @@ case "${1:-}" in
       log "ensuring model '$CUR' (from $STATE)"
       stop_stack
       launch_lane "$CUR"
+      # Up to 20 min readiness wait (same rationale as --swap/restart).
+      for i in $(seq 1 120); do
+        sleep 10
+        c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health 2>/dev/null) || c=000
+        [ "$c" = "200" ] && { log "READY after ~$((i*10))s ($CUR)"; write_motd "$CUR"; exit 0; }
+        [ $((i % 6)) -eq 0 ] && log "  still loading ($((i*10))s)..."
+      done
+      log "TIMEOUT. Check: podman logs $(lane_box "$CUR")"
+      exit 1
     fi
     write_motd "$CUR"
     ;;
