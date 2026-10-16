@@ -414,7 +414,11 @@ class ModelTui(App):
             tail = err
         elif proc is not None:
             status = "ok" if proc.returncode == 0 else f"FAILED ({proc.returncode})"
-            tail = (proc.stdout.strip() + "\n" + proc.stderr.strip()).strip()[-500:]
+            out = (proc.stdout.strip() + "\n" + proc.stderr.strip()).strip()
+            # swap-model.sh prints "still loading (Ns)..." progress to stdout; on
+            # success keep only the last summary line (e.g. "READY after ~880s"),
+            # else it clogs the menu. A failure's tail is the diagnostic.
+            tail = out[-500:] if proc.returncode != 0 else (out.splitlines()[-1] if out else "")
         else:
             status = "?"
             tail = ""
